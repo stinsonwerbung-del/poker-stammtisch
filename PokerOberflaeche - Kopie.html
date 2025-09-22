@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Poker‑Stammtisch Leaderboard</title>
+  <style>
+    :root{
+      --bg:#0f1221; --panel:#161a33; --panel2:#1b2040; --text:#e9ecf2; --muted:#aeb6cf;
+      --accent:#6ee7ff; --accent2:#8b5cff; --good:#2ecc71; --bad:#e74c3c; --warn:#f1c40f;
+      --incomplete:#6b4b11; /* dunkel orange */
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:linear-gradient(135deg,#0b0e1a,#131a34 40%,#0b0e1a);color:var(--text);
+         font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #23274d;background:linear-gradient(180deg,#141939,#121634);}    
+    h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px;}
+    .badge{font-size:12px;color:var(--muted)}
+    .btn{background:linear-gradient(135deg,var(--accent),#5fb4ff);color:#041224;border:none;padding:9px 12px;border-radius:12px;font-weight:700;box-shadow:0 6px 18px rgba(110,231,255,.15);cursor:pointer}
+    .btn:disabled{opacity:.6;cursor:not-allowed}
+    .btn.small{ padding:6px 10px; border-radius:10px; font-size:12px }
+    .btn.danger{ background:linear-gradient(135deg,#7a2430,#b9313f); color:#fff }
+    .btn.secondary{background:linear-gradient(135deg,#2c315d,#3b4375);color:#dfe6ff}
+    .btn.ghost{background:transparent;border:1px solid #3a406f;color:#cdd5ff}
+    .container{max-width:1100px;margin:16px auto;padding:0 12px;}
+
+    .status{margin:10px 0;padding:8px 10px;border-radius:12px;background:var(--panel);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .pill{padding:6px 10px;border-radius:999px;font-size:12px;background:#23274d;color:var(--muted)}
+    .pill.good{background:#1e2b3d;color:#9ee8b5}
+    .pill.warn{background:#3a3422;color:#f8e08c}
+    .pill.bad{background:#3b2330;color:#ffb2b2}
+
+    /* Leaderboard cards */
+    .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    @media (max-width:1000px){.grid{grid-template-columns:repeat(2,1fr)}}
+    @media (max-width:540px){.grid{grid-template-columns:1fr}}
+    .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid #222752;padding:12px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+    .card h3{margin:0 0 4px 0;font-size:16px}
+    .sub{font-size:12px;color:var(--muted);}
+    .rankRow{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
+    .medal{font-size:18px}
+    .trend{font-size:18px}
+    .bar{height:10px;background:#232a57;border-radius:999px;overflow:hidden;margin-top:8px;}
+    .bar>span{display:block;height:100%;background:linear-gradient(90deg,#6ee7ff,#8b5cff);width:0%;transition:width .4s ease}
+
+    /* Rounds table */
+    .tbl{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px}
+    .tbl th{font-weight:700;color:#b9c2e8;text-align:left;font-size:12px;padding:0 8px}
+    .row{background:linear-gradient(180deg,var(--panel2),#141939);border:1px solid #222752;border-radius:12px;overflow:hidden}
+    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:#7c4e16}
+    .row td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
+    .row tr:last-child td{border-bottom:none}
+    .chip{font-weight:700}
+    .muted{color:var(--muted);font-size:12px}
+    .footerFlex{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+    #roundsTableWrap{overflow-x:auto}
+
+    /* Modal */
+    dialog{border:none;border-radius:16px;padding:0;background:linear-gradient(180deg,#111633,#0f1430);color:var(--text);box-shadow:0 20px 60px rgba(0,0,0,.5)}
+    .modal{padding:14px;border:1px solid #222752;border-radius:16px}
+    .modal h2{margin:0 0 8px 0;font-size:18px}
+    .form{display:grid;gap:10px}
+    .form label{font-size:12px;color:var(--muted)}
+    .form input[type="date"], .form input[type="number"], .form input[type="password"], .form input[type="text"]{width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text)}
+    .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .modalFooter{display:flex;justify-content:flex-end;gap:10px;margin-top:10px}
+    .hint{font-size:12px;color:var(--muted);}
+
+    .ok{color:var(--good)}
+    .bad{color:var(--bad)}
+
+    /* Print styles for PDF */
+    @media print{
+      body{background:#fff;color:#000;font-family:Arial, Helvetica, sans-serif}
+      header,.container > section:not(.printable), .status{display:none}
+      .printable{display:block}
+      .printable h2{margin:0 0 8px 0}
+      table{width:100%;border-collapse:collapse}
+      th,td{border:1px solid #999;padding:6px;font-size:12px;color:#000}
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Poker‑Stammtisch <span class="badge">4 Spieler · 2560 Chips · Wettbewerb</span></h1>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" id="addRoundBtn">➕ Neue Runde</button>
+      <button class="btn secondary" id="openBtn">📂 Öffnen</button>
+      <button class="btn secondary" id="saveBtn">💾 Speichern</button>
+      <button class="btn secondary" id="reportBtn">📄 Auswertung</button>
+      <button class="btn secondary" id="adminBtn">🔒 Admin</button>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="status" id="statusBox">
+      <span>Runden: <b id="roundCount">0</b></span>
+      <span class="pill" id="sumState">Letzte Runde: —</span>
+      <span class="pill">Trend: ↑ besser · ↓ schlechter · → gleich</span>
+      <span class="pill warn" id="flagIncomplete" style="display:none">Unvollständige Zählung</span>
+      <span class="pill bad" id="flagOvershoot" style="display:none">Überschüssige Zählung</span>
+      <span class="pill" id="modePill" style="margin-left:auto">Modus: Besucher</span>
+    </div>
+
+    <section class="printable" style="display:none"></section>
+
+    <section>
+      <h2 style="font-size:18px;margin:8px 0 10px">Gesamt‑Leaderboard</h2>
+      <div class="grid" id="leaderGrid"></div>
+    </section>
+
+    <section>
+      <h2 style="font-size:18px;margin:12px 0 8px">Runden</h2>
+      <div id="roundsTableWrap">
+        <table class="tbl" id="roundsTable">
+          <thead>
+            <tr>
+              <th style="min-width:120px">Datum</th>
+              <th style="min-width:150px">Rang (Runde)</th>
+              <th>Spieler</th>
+              <th style="min-width:220px">Werte</th>
+            </tr>
+          </thead>
+          <tbody id="roundsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Neue Runde / Bearbeiten -->
+  <dialog id="roundDialog">
+    <div class="modal">
+      <h2 id="dlgTitle">Neue Runde</h2>
+      <div class="form">
+        <div>
+          <label for="dateInput">Datum</label>
+          <input id="dateInput" type="date" />
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Lorenzo (Chips)</label>
+            <input type="number" id="chips_Lorenzo" min="0" step="1" />
+          </div>
+          <div>
+            <label>Jacki (Chips)</label>
+            <input type="number" id="chips_Jacki" min="0" step="1" />
+          </div>
+          <div>
+            <label>Arnold (Chips)</label>
+            <input type="number" id="chips_Arnold" min="0" step="1" />
+          </div>
+          <div>
+            <label>Jonny (Chips)</label>
+            <input type="number" id="chips_Jonny" min="0" step="1" />
+          </div>
+        </div>
+        <div id="sumHint" class="hint">Summe: 0 / 2560</div>
+      </div>
+      <div class="modalFooter">
+        <button class="btn secondary" id="cancelRound">Abbrechen</button>
+        <button class="btn" id="saveRound">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Quick View -->
+  <dialog id="profileDialog">
+    <div class="modal" style="min-width:540px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 id="pv_name">Profil</h2>
+        <button class="btn secondary" id="pv_close">✖</button>
+      </div>
+      <div id="pv_header" class="sub" style="margin-bottom:10px"></div>
+      <div id="pv_pills" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0"></div>
+      <div>
+        <div class="bar" style="height:40px"><div id="pv_spark" style="display:flex;height:100%;gap:3px"></div></div>
+        <div class="muted" style="margin-top:6px">Letzte 10 Runden – %Stack</div>
+      </div>
+      <table class="tbl" style="margin-top:14px">
+        <thead><tr>
+          <th style="width:120px">Datum</th>
+          <th style="width:90px">Rang</th>
+          <th style="width:90px">Chips</th>
+          <th style="width:90px">%Stack</th>
+        </tr></thead>
+        <tbody id="pv_table"></tbody>
+      </table>
+    </div>
+  </dialog>
+
+  <!-- Report Dialog -->
+  <dialog id="reportDialog">
+    <div class="modal" style="min-width:420px">
+      <h2>Auswertung</h2>
+      <div class="form">
+        <label><input type="radio" name="repMode" value="all" checked> Gesamtauswertung (alle Runden)</label>
+        <label><input type="radio" name="repMode" value="player"> Spieler‑Auswertung</label>
+        <div id="repPlayerWrap" style="display:none">
+          <label>Spieler</label>
+          <select id="repPlayerSel" style="width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text)"></select>
+        </div>
+      </div>
+      <div class="modalFooter">
+        <button class="btn secondary" id="repCancel">Abbrechen</button>
+        <button class="btn" id="repGenerate">PDF erzeugen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Admin Dialog -->
+  <dialog id="adminDialog">
+    <div class="modal" style="min-width:420px">
+      <h2 id="adminTitle">Admin anmelden</h2>
+      <div id="adminLogin" class="form">
+        <div id="adminHintWrap" class="hint" style="display:none"></div>
+        <label>Passwort
+          <input type="password" id="adminPw" autocomplete="current-password" />
+        </label>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <button class="btn secondary" id="adminCancel">Abbrechen</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn ghost" id="adminForgot">Passwort vergessen?</button>
+            <button class="btn" id="adminDoLogin">Anmelden</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="adminSet" class="form" style="display:none">
+        <div class="hint">Kein Admin‑Passwort gesetzt. Vergib ein Passwort (gilt für die geladene JSON auf allen Geräten).</div>
+        <label>Neues Passwort
+          <input type="password" id="adminNew1" autocomplete="new-password" />
+        </label>
+        <label>Neues Passwort wiederholen
+          <input type="password" id="adminNew2" autocomplete="new-password" />
+        </label>
+        <label>Passworthinweis (optional)
+          <input type="text" id="adminHint" placeholder="z. B. Lieblingsverein…" />
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn secondary" id="adminSetCancel">Abbrechen</button>
+          <button class="btn" id="adminDoSet">Speichern</button>
+        </div>
+      </div>
+
+      <div id="adminManage" class="form" style="display:none">
+        <div class="hint">Admin angemeldet. Du kannst das Passwort ändern oder dich abmelden.</div>
+        <label>Aktuelles Passwort
+          <input type="password" id="adminCur" autocomplete="current-password" />
+        </label>
+        <label>Neues Passwort
+          <input type="password" id="adminChg1" autocomplete="new-password" />
+        </label>
+        <label>Neues Passwort wiederholen
+          <input type="password" id="adminChg2" autocomplete="new-password" />
+        </label>
+        <label>Passworthinweis (optional)
+          <input type="text" id="adminHintEdit" />
+        </label>
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn ghost" id="adminLogout">Abmelden</button>
+          <div>
+            <button class="btn secondary" id="adminManageCancel">Schließen</button>
+            <button class="btn" id="adminDoChange">Ändern</button>
+          </div>
+        </div>
+        <details>
+          <summary style="margin-top:8px;color:#ffb2b2">Notfall‑Reset (Passwort löschen)</summary>
+          <div class="hint">Wenn du das Passwort vergessen hast: Tippe <b>RESET</b> unten ein und bestätige. Das löscht das Passwort aus der JSON. Danach <b>sofort ein neues setzen</b> und Datei speichern.</div>
+          <input type="text" id="adminResetText" placeholder="RESET" />
+          <div style="display:flex;justify-content:flex-end;margin-top:6px">
+            <button class="btn danger" id="adminDoReset">Passwort löschen</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    // --- Vorgaben (fix) ---
+    const PLAYERS = ["Lorenzo","Jacki","Arnold","Jonny"]; // fix
+    const TOTAL = 2560; // fix
+    const DECIMALS = 2; // fix
+    const STORAGE_KEY = 'pokerRounds_v4';
+
+    // --- Helpers ---
+    const fmtPct = (v)=> (v ?? 0).toFixed(DECIMALS).replace('.',',');
+    const clamp = (n,min,max)=> Math.max(min, Math.min(max,n));
+    const fmtDate = (iso)=>{ if(!iso) return '—'; const [y,m,d] = iso.split('-'); return `${d}.${m}.${y}`; };
+
+    // Data model wrapper: supports old array JSON and new object JSON
+    function normalizeData(obj){
+      if(Array.isArray(obj)) return {version:4, settings:{}, rounds: withIds(obj)};
+      const out = {version: obj?.version||4, settings: obj?.settings||{}, rounds: Array.isArray(obj?.rounds)? withIds(obj.rounds): []};
+      return out;
+    }
+    function withIds(arr){ let changed=false; for(const r of arr){ if(!r.id){ r.id = Date.now()+Math.floor(Math.random()*1e6); changed=true; } } return arr; }
+
+    function loadData(){
+      try{
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if(!raw) return {version:4, settings:{}, rounds:[]};
+        const parsed = JSON.parse(raw);
+        return normalizeData(parsed);
+      }catch{ return {version:4, settings:{}, rounds:[]}; }
+    }
+    function saveData(data){ localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); }
+
+    function loadRounds(){ return loadData().rounds; }
+    function saveRounds(rounds){ const data = loadData(); data.rounds = withIds(rounds); saveData(data); }
+
+    async function sha256Hex(str){
+      if(window.crypto?.subtle){
+        const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+        return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+      }
+      // Fallback (nicht kryptographisch stark, aber besser als Klartext)
+      let h=0; for(let i=0;i<str.length;i++){ h=((h<<5)-h)+str.charCodeAt(i); h|=0; } return ('00000000'+(h>>>0).toString(16)).slice(-8);
+    }
+
+    function rankCompetition(values){
+      const sorted = [...values].sort((a,b)=> b.value - a.value);
+      let rank=0, seen=0, prev=Infinity; const map={};
+      for(const it of sorted){ seen++; if(it.value!==prev){ rank=seen; prev=it.value; } map[it.name]=rank; }
+      return map;
+    }
+    function trendArrow(history){
+      if(!history || history.length<2) return '•';
+      const last = history.slice(-5); const n = last.length;
+      const xs = Array.from({length:n},(_,i)=>i+1);
+      const xmean = xs.reduce((a,b)=>a+b,0)/n; const ymean = last.reduce((a,b)=>a+b,0)/n;
+      let num=0, den=0; for(let i=0;i<n;i++){ num += (xs[i]-xmean)*(last[i]-ymean); den += (xs[i]-xmean)*(xs[i]-xmean); }
+      const slope = den? num/den : 0; // %-Punkte pro Runde
+      if(slope>0.2) return '↑'; if(slope<-0.2) return '↓'; return '→';
+    }
+
+    // compute stats (chronologisch nach Datum für Historien)
+    function compute(rounds){
+      const sortedAsc = [...rounds].sort((a,b)=> (a.date||'').localeCompare(b.date||''));
+      const roundStats = sortedAsc.map(r=>{
+        const sum = PLAYERS.reduce((acc,p)=> acc + (+r.chips?.[p]||0), 0);
+        const per = {}; PLAYERS.forEach(p=> per[p] = sum? ((+r.chips?.[p]||0)/sum*100): 0);
+        const ranks = rankCompetition(PLAYERS.map(p=> ({name:p, value:+(r.chips?.[p]||0)})));
+        return { id:r.id, date:r.date, chips:r.chips||{}, sum, percent:per, rank:ranks, complete:('complete' in r)? !!r.complete : (sum===TOTAL) };
+      });
+
+      // Overall
+      const totals = {}; const counts = {}; const pctHist = {};
+      PLAYERS.forEach(p=>{ totals[p]=0; counts[p]=roundStats.length; pctHist[p]=[]; });
+      roundStats.forEach(rs=>{ PLAYERS.forEach(p=> { totals[p]+= (+rs.chips[p]||0); pctHist[p].push(rs.percent[p]||0); }); });
+      const avgs = {}; const avgPct = {};
+      PLAYERS.forEach(p=>{ const avgChips = counts[p]? (totals[p]/counts[p]) : 0; avgs[p]=avgChips; avgPct[p]= TOTAL? (avgChips/TOTAL*100):0; });
+      const overallRank = rankCompetition(PLAYERS.map(p=> ({name:p, value:avgPct[p]})));
+      const trends = {}; PLAYERS.forEach(p=> trends[p] = trendArrow(pctHist[p]));
+
+      return { roundStats, avgs, avgPct, overallRank, trends };
+    }
+
+    // --- Admin State ---
+    let isAdmin = false;
+    function getSettings(){ return loadData().settings || {}; }
+    function setSettings(newSettings){ const data = loadData(); data.settings = newSettings || {}; saveData(data); }
+
+    function updateModePill(){
+      const pill = document.getElementById('modePill');
+      pill.textContent = 'Modus: ' + (isAdmin ? 'Admin' : 'Besucher');
+    }
+
+    // --- DOM Refs ---
+    const leaderGrid = document.getElementById('leaderGrid');
+    const roundsBody = document.getElementById('roundsBody');
+    const roundCountEl = document.getElementById('roundCount');
+    const sumState = document.getElementById('sumState');
+
+    // --- Render ---
+    function render(){
+      const {rounds} = loadData();
+      const stats = compute(rounds);
+      roundCountEl.textContent = String(rounds.length);
+
+      // Status (letzte nach Datum)
+      const byDateDesc = [...rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+      if(byDateDesc.length){
+        const last = byDateDesc[0];
+        const sum = PLAYERS.reduce((a,p)=> a + (+last.chips?.[p]||0), 0);
+        const isComplete = ('complete' in last) ? !!last.complete : (sum===TOTAL);
+        sumState.textContent = isComplete
+          ? `Letzte Runde: ${sum} / ${TOTAL}`
+          : `Letzte Runde: ${sum} / ${TOTAL} · ${sum < TOTAL ? 'unvollständige Zählung (gezählt)' : 'überschüssige Zählung (gezählt)'}`;
+        if(isComplete){ sumState.className='pill good'; }
+        else if(sum < TOTAL){ sumState.className='pill warn'; }
+        else { sumState.className='pill bad'; }
+        // Globale Hinweise: falls irgendwo unvollständig/überschüssig vorhanden
+        const sumsAll = rounds.map(r => PLAYERS.reduce((a,p)=> a + (+r.chips?.[p]||0), 0));
+        const hasIncomplete = sumsAll.some(s => s < TOTAL);
+        const hasOvershoot  = sumsAll.some(s => s > TOTAL);
+        document.getElementById('flagIncomplete').style.display = hasIncomplete ? '' : 'none';
+        document.getElementById('flagOvershoot').style.display  = hasOvershoot  ? '' : 'none';
+      } else {
+        sumState.textContent = 'Letzte Runde: —'; sumState.className='pill';
+        document.getElementById('flagIncomplete').style.display = 'none';
+        document.getElementById('flagOvershoot').style.display  = 'none';
+      }
+
+      updateModePill();
+      document.getElementById('addRoundBtn').style.display = isAdmin ? '' : 'none';
+
+      // Leaderboard
+      leaderGrid.innerHTML = '';
+      const cards = PLAYERS.map(p=> ({ name:p, avg: stats.avgs[p]||0, pct: stats.avgPct[p]||0, rank: stats.overallRank[p]||0, trend: stats.trends[p]||'•' }))
+                           .sort((a,b)=> a.rank-b.rank);
+      for(const c of cards){
+        const medal = c.rank===1? '🥇': c.rank===2? '🥈': c.rank===3? '🥉': '';
+        const card = document.createElement('div');
+        card.className='card';
+        card.innerHTML = `
+          <h3>${medal ? medal + ' ' : ''}${c.name}</h3>
+          <div class="sub">Ø Chips: <b>${Math.round(c.avg)}</b> · Ø %Stack: <b>${fmtPct(c.pct)}</b>%</div>
+          <div class="rankRow">
+            <div class="medal">Platz <b>${c.rank}</b></div>
+            <div class="trend" title="Tendenz">${c.trend}</div>
+          </div>
+          <div class="bar"><span style="width:${clamp(c.pct,0,100)}%"></span></div>`;
+        card.style.cursor='pointer'; card.addEventListener('click', ()=> openProfile(c.name));
+        leaderGrid.appendChild(card);
+      }
+
+      // Rundenübersicht (neueste oben, nach Datum)
+      roundsBody.innerHTML='';
+      const sortedRounds = [...rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+      sortedRounds.forEach((r)=>{
+        // per-Runde Berechnungen
+        const sum = PLAYERS.reduce((acc,p)=> acc + (+r.chips?.[p]||0), 0);
+        const percent = {}; PLAYERS.forEach(p=> percent[p] = sum? ((+r.chips?.[p]||0)/sum*100) : 0);
+        const rank = rankCompetition(PLAYERS.map(p=> ({name:p, value:+(r.chips?.[p]||0)})));
+        const isComplete = ('complete' in r)? !!r.complete : (sum===TOTAL);
+
+        // Sortierreihenfolge innerhalb der Runde
+        const order = PLAYERS.slice().sort((a,b)=>{ const ra=rank[a], rb=rank[b]; if(ra!==rb) return ra-rb; const ca=r.chips?.[a]||0, cb=r.chips?.[b]||0; if(cb!==ca) return cb-ca; return a.localeCompare(b); });
+
+        // Zellen bauen in Reihenfolge: Datum | Rang | Spieler | Werte
+        const td1 = document.createElement('td'); td1.style.fontWeight='700'; td1.textContent = fmtDate(r.date) ;
+        const td2 = document.createElement('td'); td2.innerHTML = order.map(p=> `<div style="margin:4px 0">#${rank[p]}</div>`).join('');
+        const td3 = document.createElement('td'); td3.innerHTML = order.map(p=> `<div style="margin:4px 0"><span>${p}</span></div>`).join('');
+        const td4 = document.createElement('td'); td4.innerHTML = order.map(p=> `<div style="margin:4px 0" class="muted"><span class="chip">${r.chips?.[p]||0}</span> · ${fmtPct(percent[p]||0)}%</div>`).join('');
+
+        // Inner table with footer row
+        const inner = document.createElement('table'); inner.style.width='100%';
+        inner.innerHTML = `
+          <tr>
+            <td style=\"min-width:120px;padding:0 8px 8px 8px\">${td1.innerHTML}</td>
+            <td style=\"min-width:150px;padding:0 8px 8px 8px\">${td2.innerHTML}</td>
+            <td style=\"padding:0 8px 8px 8px\">${td3.innerHTML}</td>
+            <td style=\"min-width:220px;padding:0 8px 8px 8px\">${td4.innerHTML}</td>
+          </tr>
+          <tr>
+            <td colspan=\"4\" style=\"padding:0 8px 10px 8px\">
+              <div class=\"footerFlex\">
+                <div class=\"${isComplete?'ok':'bad'}\">Rundensumme: <b>${sum}</b> / ${TOTAL} · ${isComplete? '✓ OK' : (sum < TOTAL ? '✗ Unvollständig' : '✗ Überschüssig') }</div>
+                <div>
+                  ${(isAdmin && !isComplete) ? `<button class=\"btn small ghost\" data-edit-id=\"${r.id}\">Bearbeiten</button>` : ''}
+                  ${isAdmin ? `<button class=\"btn small danger\" data-del-id=\"${r.id}\">Löschen</button>` : ''}
+                </div>
+              </div>
+            </td>
+          </tr>`;
+        const td = document.createElement('td'); td.colSpan=4; td.appendChild(inner);
+        const wrap = document.createElement('tr'); wrap.className = 'row' + (isComplete? '' : ' incomplete'); wrap.appendChild(td);
+        roundsBody.appendChild(wrap);
+      });
+
+      // Buttons aktivieren
+      document.querySelectorAll('button[data-del-id]').forEach(btn=>{ btn.addEventListener('click', ()=>{ const id = +btn.getAttribute('data-del-id'); deleteRound(id); }); });
+      document.querySelectorAll('button[data-edit-id]').forEach(btn=>{ btn.addEventListener('click', ()=>{ const id = +btn.getAttribute('data-edit-id'); openEditRound(id); }); });
+    }
+
+    function deleteRound(id){
+      if(!isAdmin){ alert('Nur im Admin‑Modus.'); return; }
+      const data = loadData();
+      const i = data.rounds.findIndex(x=> x.id===id);
+      if(i<0) return;
+      const label = fmtDate(data.rounds[i].date);
+      if(confirm(`Runde ${label} wirklich löschen?`)){
+        data.rounds.splice(i,1); saveData(data); render();
+      }
+    }
+
+    // --- Dialog Neu/Bearbeiten ---
+    const dlg = document.getElementById('roundDialog');
+    const addRoundBtn = document.getElementById('addRoundBtn');
+    const cancelRound = document.getElementById('cancelRound');
+    const saveRoundBtn = document.getElementById('saveRound');
+    const inputs = {
+      date: document.getElementById('dateInput'),
+      Lorenzo: document.getElementById('chips_Lorenzo'),
+      Jacki: document.getElementById('chips_Jacki'),
+      Arnold: document.getElementById('chips_Arnold'),
+      Jonny: document.getElementById('chips_Jonny')
+    };
+    let editId = null; // null = neue Runde, sonst bearbeiten
+
+    function remainingText(sum){
+      const diff = TOTAL - sum;
+      if(diff===0) return `✓ Alles gut — Summe: ${sum} / ${TOTAL}`;
+      if(diff>0) return `Es fehlen noch ${diff} Chips — Summe: ${sum} / ${TOTAL}`;
+      return `${-diff} Chips zu viel — Summe: ${sum} / ${TOTAL}`;
+    }
+    function updateSumHint(){
+      const sum = ['Lorenzo','Jacki','Arnold','Jonny'].reduce((a,p)=> a + (+inputs[p].value||0), 0);
+      const hint = document.getElementById('sumHint');
+      hint.textContent = remainingText(sum);
+      hint.style.color = (sum===TOTAL) ? 'var(--good)' : (sum<TOTAL ? '#ffd79c' : '#ffb2b2');
+    }
+
+    addRoundBtn.addEventListener('click', ()=>{
+      if(!isAdmin){ alert('Nur im Admin‑Modus.'); return; }
+      editId = null;
+      document.getElementById('dlgTitle').textContent = 'Neue Runde';
+      inputs.date.value = new Date().toISOString().slice(0,10);
+      ['Lorenzo','Jacki','Arnold','Jonny'].forEach(p=> inputs[p].value = 0);
+      updateSumHint(); dlg.showModal();
+    });
+    cancelRound.addEventListener('click', ()=> dlg.close());
+    Object.values(inputs).forEach(inp=> inp.addEventListener('input', updateSumHint));
+
+    saveRoundBtn.addEventListener('click', ()=>{
+      if(!isAdmin){ alert('Nur im Admin‑Modus.'); return; }
+      const chips = {
+        Lorenzo: +inputs.Lorenzo.value||0,
+        Jacki: +inputs.Jacki.value||0,
+        Arnold: +inputs.Arnold.value||0,
+        Jonny: +inputs.Jonny.value||0
+      };
+      const sum = Object.values(chips).reduce((a,b)=> a+ b, 0);
+      const round = { id: editId ?? (Date.now()+Math.floor(Math.random()*1e6)), date: inputs.date.value, chips, complete: (sum===TOTAL) };
+      const data = loadData();
+      if(editId){
+        const i = data.rounds.findIndex(x=> x.id===editId);
+        if(i>=0){ data.rounds[i] = round; }
+      } else {
+        data.rounds.push(round);
+      }
+      saveData(data);
+      dlg.close(); render();
+    });
+
+    function openEditRound(id){
+      if(!isAdmin){ alert('Nur im Admin‑Modus.'); return; }
+      const data = loadData();
+      const r = data.rounds.find(x=> x.id===id); if(!r) return;
+      editId = id;
+      document.getElementById('dlgTitle').textContent = 'Runde bearbeiten';
+      inputs.date.value = r.date || new Date().toISOString().slice(0,10);
+      inputs.Lorenzo.value = +r.chips?.Lorenzo || 0;
+      inputs.Jacki.value = +r.chips?.Jacki || 0;
+      inputs.Arnold.value = +r.chips?.Arnold || 0;
+      inputs.Jonny.value = +r.chips?.Jonny || 0;
+      updateSumHint(); dlg.showModal();
+    }
+
+    // --- Datei öffnen/speichern (iCloud via Picker/Download) ---
+    let currentHandle = null; // FileSystemFileHandle (wo möglich)
+
+    async function openFromPicker(){
+      try{
+        if('showOpenFilePicker' in window){
+          const [handle] = await window.showOpenFilePicker({ types:[{ description:'JSON', accept:{ 'application/json':['.json'] } }] });
+          const file = await handle.getFile(); const text = await file.text(); const data = normalizeData(JSON.parse(text));
+          saveData(data); currentHandle = handle; isAdmin = false; render();
+          const hint = data.settings?.hint; if(hint){ document.getElementById('adminHintWrap').textContent = 'Hinweis: '+hint; }
+        } else {
+          const inp = document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
+          inp.onchange = async ()=>{ const f = inp.files[0]; if(!f) return; const text = await f.text(); try{ const data = normalizeData(JSON.parse(text)); saveData(data); isAdmin=false; render(); }catch{ alert('Ungültige Datei.'); } };
+          inp.click();
+        }
+      }catch(e){ /* abgebrochen */ }
+    }
+
+    async function saveToPicker(){
+      const data = loadData(); const json = JSON.stringify(data, null, 2);
+      if(currentHandle && 'createWritable' in currentHandle){
+        const writable = await currentHandle.createWritable(); await writable.write(json); await writable.close(); flashSaved(); return;
+      }
+      if('showSaveFilePicker' in window){
+        const handle = await window.showSaveFilePicker({ suggestedName:'poker_rounds.json', types:[{ description:'JSON', accept:{ 'application/json':['.json'] } }] });
+        const writable = await handle.createWritable(); await writable.write(json); await writable.close(); currentHandle = handle; flashSaved(); return;
+      }
+      const blob = new Blob([json], {type:'application/json'});
+      const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download='poker_rounds.json'; a.click(); URL.revokeObjectURL(url);
+      alert('Gespeichert (Download). Auf iPhone/iPad bitte die Datei in iCloud Drive ablegen/ersetzen.');
+    }
+
+    function flashSaved(){ const btn = document.getElementById('saveBtn'); const old = btn.textContent; btn.textContent='✅ Gespeichert'; setTimeout(()=> btn.textContent=old, 1200); }
+
+    document.getElementById('openBtn').addEventListener('click', openFromPicker);
+    document.getElementById('saveBtn').addEventListener('click', saveToPicker);
+
+    // --- Auswertung (PDF via Print) ---
+    const repDlg = document.getElementById('reportDialog');
+    document.getElementById('reportBtn').addEventListener('click', ()=>{
+      const sel = document.getElementById('repPlayerSel'); sel.innerHTML=''; PLAYERS.forEach(p=>{ const o=document.createElement('option'); o.value=p; o.textContent=p; sel.appendChild(o); });
+      repDlg.showModal();
+    });
+    document.getElementsByName('repMode').forEach(r=> r.addEventListener('change', ()=>{
+      document.getElementById('repPlayerWrap').style.display = (document.querySelector('input[name="repMode"]:checked').value==='player')? '' : 'none';
+    }));
+    document.getElementById('repCancel').addEventListener('click', ()=> repDlg.close());
+    document.getElementById('repGenerate').addEventListener('click', ()=>{
+      const mode = document.querySelector('input[name="repMode"]:checked').value;
+      const player = document.getElementById('repPlayerSel').value;
+      repDlg.close(); generatePDF(mode, player);
+    });
+
+    function generatePDF(mode, player){
+      const {rounds} = loadData(); const stats = compute(rounds);
+      const win = window.open('', '_blank');
+      const style = `
+        <style>
+          body{font-family:Arial, Helvetica, sans-serif; color:#000}
+          h1,h2{margin:0 0 8px 0}
+          table{width:100%;border-collapse:collapse}
+          th,td{border:1px solid #999;padding:6px;font-size:12px}
+          .muted{color:#444}
+        </style>`;
+      let html = '';
+      if(mode==='all'){
+        const byDateDesc = [...rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+        html += `<h1>Gesamtauswertung</h1>`;
+        html += `<h2>Runden: ${byDateDesc.length}</h2>`;
+        html += `<table><thead><tr><th>Datum</th>${PLAYERS.map(p=>`<th>${p} Chips</th><th>${p} %</th>`).join('')}<th>Summe</th><th>Status</th></tr></thead><tbody>`;
+        for(const r of byDateDesc){
+          const sum = PLAYERS.reduce((a,p)=> a + (+r.chips?.[p]||0), 0);
+          const status = (sum===TOTAL? 'OK' : (sum<TOTAL? 'Unvollständig' : 'Überschüssig'));
+          const pct = PLAYERS.map(p=> sum? ((+r.chips?.[p]||0)/sum*100) : 0);
+          html += `<tr><td>${fmtDate(r.date)}</td>${PLAYERS.map((p,i)=>`<td>${r.chips?.[p]||0}</td><td>${fmtPct(pct[i])}%</td>`).join('')}<td>${sum}</td><td>${status}</td></tr>`;
+        }
+        html += `</tbody></table>`;
+        const cards = PLAYERS.map(p=> ({ name:p, avg: stats.avgs[p]||0, pct: stats.avgPct[p]||0, rank: stats.overallRank[p]||0 }))
+                             .sort((a,b)=> a.rank-b.rank);
+        html += `<h2 style=\"margin-top:12px\">Gesamtwertung</h2>`;
+        html += `<table><thead><tr><th>Platz</th><th>Spieler</th><th>Ø Chips</th><th>Ø %Stack</th></tr></thead><tbody>`;
+        for(const c of cards){ html += `<tr><td>${c.rank}</td><td>${c.name}</td><td>${Math.round(c.avg)}</td><td>${fmtPct(c.pct)}%</td></tr>`; }
+        html += `</tbody></table>`;
+      } else {
+        const name = player; const byDateDesc = [...rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+        const rows = byDateDesc.map(r=>{
+          const sum = PLAYERS.reduce((a,p)=> a + (+r.chips?.[p]||0), 0);
+          const pct = sum? ((+r.chips?.[name]||0)/sum*100) : 0;
+          const ranks = rankCompetition(PLAYERS.map(p=> ({name:p, value:+(r.chips?.[p]||0)})));
+          return { date:r.date||'', chips:+r.chips?.[name]||0, pct, rank:ranks[name]||4, status: (sum===TOTAL? 'OK' : (sum<TOTAL? 'Unvollständig' : 'Überschüssig')) };
+        });
+        const n = rows.length; const avgChips = n? rows.reduce((a,b)=> a+b.chips,0)/n : 0; const avgPct   = n? rows.reduce((a,b)=> a+b.pct,0)/n : 0;
+        const d1 = rows.filter(r=> r.rank===1).length; const d2 = rows.filter(r=> r.rank===2).length; const d3 = rows.filter(r=> r.rank===3).length; const d4 = rows.filter(r=> r.rank===4).length;
+        html += `<h1>Spieler‑Auswertung: ${name}</h1>`;
+        html += `<div class=\"muted\">Runden: ${n} · Ø Chips: ${Math.round(avgChips)} · Ø %Stack: ${fmtPct(avgPct)}% · Verteilung: 🥇 ${d1} · 🥈 ${d2} · 🥉 ${d3} · 🗑️ ${d4}</div>`;
+        html += `<table style=\"margin-top:8px\"><thead><tr><th>Datum</th><th>Rang</th><th>Chips</th><th>%Stack</th><th>Status</th></tr></thead><tbody>`;
+        rows.forEach(r=>{ html += `<tr><td>${fmtDate(r.date)}</td><td>#${r.rank}</td><td>${r.chips}</td><td>${fmtPct(r.pct)}%</td><td>${r.status}</td></tr>`; });
+        html += `</tbody></table>`;
+      }
+      win.document.write(`<html><head><title>Auswertung</title>${style}</head><body>${html}<script>window.onload=()=>window.print();<\/script></body></html>`);
+      win.document.close();
+    }
+
+    // Quick View
+    const pvDlg = document.getElementById('profileDialog');
+    const pvClose = document.getElementById('pv_close');
+    pvClose?.addEventListener('click', ()=> pvDlg.close());
+    pvDlg?.addEventListener('cancel', (e)=> { e.preventDefault(); pvDlg.close(); });
+
+    function openProfile(name){
+      const {rounds} = loadData(); if(!rounds.length){ alert('Keine Runden vorhanden.'); return; }
+      const byDateDesc = [...rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
+      const last10desc = byDateDesc.slice(0,10);
+      const rows = last10desc.map(r=>{
+        const sum = PLAYERS.reduce((a,p)=> a + (+r.chips?.[p]||0), 0);
+        const pct = sum? ((+r.chips?.[name]||0)/sum*100) : 0;
+        const ranks = rankCompetition(PLAYERS.map(p=> ({name:p, value:+(r.chips?.[p]||0)})));
+        return { date: r.date||'', chips:+r.chips?.[name]||0, pct, rank:ranks[name]||4 };
+      });
+      const n = rows.length; const avgChips = n? rows.reduce((a,b)=> a+b.chips,0)/n : 0; const avgPct   = n? rows.reduce((a,b)=> a+b.pct,0)/n : 0;
+      const d1 = rows.filter(r=> r.rank===1).length; const d2 = rows.filter(r=> r.rank===2).length; const d3 = rows.filter(r=> r.rank===3).length; const d4 = rows.filter(r=> r.rank===4).length;
+      const sparkSeries = [...rows].reverse().map(r=> r.pct); const tArrow = trendArrow(sparkSeries);
+      const statsNow  = compute(loadData().rounds); const overallRank = statsNow.overallRank[name] || 4;
+
+      document.getElementById('pv_name').textContent = name;
+      document.getElementById('pv_header').innerHTML = `Gesamtrang: <b>#${overallRank}</b> · Trend: <b>${tArrow}</b>`;
+      document.getElementById('pv_pills').innerHTML = `
+        <span class="pill">Runden (≤10): <b>${n}</b></span>
+        <span class="pill">Ø Chips: <b>${Math.round(avgChips)}</b></span>
+        <span class="pill">Ø %Stack: <b>${fmtPct(avgPct)}</b>%</span>
+        <span class="pill">Verteilung: 🥇 ${d1} · 🥈 ${d2} · 🥉 ${d3} · 🗑️ ${d4}</span>`;
+
+      const pvSpark = document.getElementById('pv_spark');
+      pvSpark.innerHTML = sparkSeries.map((pct, i)=>{
+        const h = Math.max(4, Math.min(100, Math.round(pct)));
+        const r = [...rows].reverse()[i];
+        const title = `${fmtDate(r.date)} — ${Math.round(r.chips)} Chips · ${fmtPct(pct)}% · #${r.rank}`;
+        return `<span title="${title}" style="flex:1;background:linear-gradient(180deg,#6ee7ff,#8b5cff);align-self:flex-end;height:${h}%"></span>`;
+      }).join('');
+
+      const pvTable = document.getElementById('pv_table');
+      pvTable.innerHTML = rows.map(r=> `
+        <tr><td>${fmtDate(r.date)}</td><td>#${r.rank}</td><td>${r.chips}</td><td>${fmtPct(r.pct)}%</td></tr>
+      `).join('');
+      pvDlg.showModal();
+    }
+
+    // --- Admin Dialog logic ---
+    const adminDlg = document.getElementById('adminDialog');
+    const adminBtn = document.getElementById('adminBtn');
+    const adminLogin = document.getElementById('adminLogin');
+    const adminSet = document.getElementById('adminSet');
+    const adminManage = document.getElementById('adminManage');
+
+    function showAdminView(view){
+      adminLogin.style.display = view==='login'? '' : 'none';
+      adminSet.style.display = view==='set'? '' : 'none';
+      adminManage.style.display = view==='manage'? '' : 'none';
+    }
+
+    adminBtn.addEventListener('click', ()=>{
+      const settings = getSettings();
+      document.getElementById('adminTitle').textContent = isAdmin ? 'Admin verwalten' : (settings.adminHash? 'Admin anmelden' : 'Admin einrichten');
+      const hintWrap = document.getElementById('adminHintWrap');
+      hintWrap.style.display = settings.hint ? '' : 'none';
+      hintWrap.textContent = settings.hint ? ('Hinweis: '+settings.hint) : '';
+      if(isAdmin){
+        showAdminView('manage');
+        document.getElementById('adminHintEdit').value = settings.hint||'';
+      } else if(settings.adminHash){
+        showAdminView('login');
+      } else {
+        showAdminView('set');
+      }
+      adminDlg.showModal();
+    });
+
+    document.getElementById('adminCancel').addEventListener('click', ()=> adminDlg.close());
+    document.getElementById('adminSetCancel').addEventListener('click', ()=> adminDlg.close());
+    document.getElementById('adminManageCancel').addEventListener('click', ()=> adminDlg.close());
+
+    document.getElementById('adminDoLogin').addEventListener('click', async ()=>{
+      const pw = document.getElementById('adminPw').value||''; const settings = getSettings();
+      const hash = await sha256Hex(pw);
+      if(hash === settings.adminHash){ isAdmin = true; updateModePill(); adminDlg.close(); render(); }
+      else alert('Falsches Passwort.');
+    });
+
+    document.getElementById('adminDoSet').addEventListener('click', async ()=>{
+      const p1 = document.getElementById('adminNew1').value||'';
+      const p2 = document.getElementById('adminNew2').value||'';
+      const hint = document.getElementById('adminHint').value||'';
+      if(p1.length < 4){ alert('Mind. 4 Zeichen.'); return; }
+      if(p1!==p2){ alert('Passwörter stimmen nicht überein.'); return; }
+      const settings = getSettings(); settings.adminHash = await sha256Hex(p1); settings.hint = hint; setSettings(settings); adminDlg.close(); alert('Passwort gespeichert. Bitte JSON sichern (💾).'); render();
+    });
+
+    document.getElementById('adminDoChange').addEventListener('click', async ()=>{
+      const cur = document.getElementById('adminCur').value||'';
+      const n1 = document.getElementById('adminChg1').value||'';
+      const n2 = document.getElementById('adminChg2').value||'';
+      const hint = document.getElementById('adminHintEdit').value||'';
+      const settings = getSettings();
+      if((await sha256Hex(cur)) !== settings.adminHash){ alert('Aktuelles Passwort falsch.'); return; }
+      if(n1.length<4){ alert('Neues Passwort: mind. 4 Zeichen.'); return; }
+      if(n1!==n2){ alert('Neue Passwörter stimmen nicht überein.'); return; }
+      settings.adminHash = await sha256Hex(n1); settings.hint = hint; setSettings(settings); adminDlg.close(); alert('Passwort geändert. Bitte JSON sichern (💾).'); isAdmin = true; render();
+    });
+
+    document.getElementById('adminLogout').addEventListener('click', ()=>{ isAdmin=false; updateModePill(); adminDlg.close(); render(); });
+
+    document.getElementById('adminForgot').addEventListener('click', ()=>{
+      alert('Wenn du das Passwort vergessen hast, kannst du den Passworthinweis nutzen oder per Notfall‑Reset im Verwaltungsdialog löschen. Danach sofort neues Passwort setzen und JSON speichern.');
+    });
+
+    document.getElementById('adminDoReset').addEventListener('click', ()=>{
+      const txt = (document.getElementById('adminResetText').value||'').trim();
+      if(txt !== 'RESET'){ alert('Bitte genau RESET eintippen.'); return; }
+      const settings = getSettings(); settings.adminHash = undefined; settings.hint = undefined; setSettings(settings); alert('Passwort entfernt. Setze jetzt ein neues und speichere die JSON (💾).'); isAdmin=false; render();
+    });
+
+    // Initial render
+    render();
+  </script>
+</body>
+</html>
