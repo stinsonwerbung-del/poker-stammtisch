@@ -63,26 +63,26 @@
     .form label{font-size:12px;color:var(--muted)}
     .form input[type="date"], .form input[type="number"], .form input[type="password"], .form input[type="text"], .form input[type="file"], .form select{width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text)}
     .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
     .hidden{display:none}
     .ok{color:var(--good)}
     .bad{color:var(--bad)}
-    footer{margin:30px 0 20px; text-align:center; color:var(--muted);}
     @media print {
-      header, .btn, .status, #btnLogout, footer { display:none !important; }
+      header, .btn, .status, #btnLogout { display:none !important; }
       body { background:#fff; color:#000; }
       .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
       .container { max-width:100%; margin:0; padding:0 8px; }
       .tbl { border-spacing:0; }
       .row { background:#fff; border-color:#ccc; }
     }
-    [data-loading="1"] { cursor: progress; }
   </style>
 </head>
 <body>
   <header>
-    <div><h1>Poker-Stammtisch</h1></div>
+    <div>
+      <h1>Poker-Stammtisch</h1>
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <!-- werden im Firebase-Modus von app.js ausgeblendet -->
       <button class="btn secondary" id="openBtn">📂 Öffnen</button>
       <button class="btn secondary" id="saveBtn">💾 Speichern</button>
     </div>
@@ -109,7 +109,6 @@
       <div class="status">
         <span class="pill" id="whoPill">Eingeloggt als: —</span>
         <button class="btn small ghost" id="btnEditSelf">Profil bearbeiten</button>
-        <button class="btn small ghost" id="btnStreakSettings">🔥 Streak-Einstellungen</button>
         <button class="btn small ghost" id="btnLogout">Abmelden</button>
       </div>
       <div class="grid">
@@ -150,6 +149,7 @@
             <button class="btn secondary" id="btnBackHome">← Übersicht</button>
             <button class="btn" id="addRoundBtn">➕ Neue Runde</button>
             <button class="btn ghost" id="btnTourSettings">⚙️ Einstellungen</button>
+            <button class="btn ghost" id="btnStreakSettings">🔥 Streak-Tage</button>
           </div>
         </div>
       </div>
@@ -218,8 +218,6 @@
     </section>
   </div>
 
-  <footer>© Brenner</footer>
-
   <!-- DIALOGE -->
   <dialog id="dlgTournament">
     <div class="modal">
@@ -244,17 +242,15 @@
     </div>
   </dialog>
 
+  <!-- RUNDEN-DIALOG (mit "Rest auffüllen") -->
   <dialog id="dlgRound">
     <div class="modal">
       <h2 id="dlgRoundTitle">Neue Runde</h2>
       <div id="roundForm" class="form"></div>
-      <div class="grid3">
-        <button class="btn ghost" id="btnFillRest">↗️ Rest auffüllen</button>
-        <div id="sumHint" class="sub" style="align-self:center">Summe: 0</div>
-        <div></div>
-      </div>
-      <div class="modalFooter">
+      <div id="sumHint" class="sub">Summe: 0</div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
         <button class="btn secondary" id="roundCancel">Abbrechen</button>
+        <button class="btn ghost" id="btnFillRest">↗️ Rest auffüllen</button>
         <button class="btn" id="roundSave">Speichern</button>
       </div>
     </div>
@@ -311,13 +307,11 @@
     </div>
   </dialog>
 
+  <!-- NEU: Streak-Wochentage-Dialog -->
   <dialog id="dlgStreakSettings">
     <div class="modal">
-      <h2>Streak-Einstellungen (global)</h2>
-      <div class="form">
-        <div class="sub">Angehakte Wochentage werden <b>pausiert</b> (zählen nicht, brechen nicht).</div>
-        <div class="grid3" id="weekPauseGrid"></div>
-      </div>
+      <h2>Streak – Wochentage pausieren</h2>
+      <div id="weekPauseGrid" class="form"></div>
       <div class="modalFooter">
         <button class="btn secondary" id="streakCancel">Abbrechen</button>
         <button class="btn" id="streakSave">Speichern</button>
@@ -325,6 +319,30 @@
     </div>
   </dialog>
 
+  <!-- Footer -->
+  <footer style="text-align:center; padding:16px; color:#aeb6cf;">
+    (c) Brenner
+  </footer>
+
+  <!-- Firebase SDKs + deine Config (VOR app.js einfügen!) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyBDl3rpU3GjTb_c9rzzHQ04FCMAsBPVbYg",
+      authDomain: "poker-2c3c6.firebaseapp.com",
+      databaseURL: "https://poker-2c3c6-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "poker-2c3c6",
+      storageBucket: "poker-2c3c6.appspot.com", /* korrigiert */
+      messagingSenderId: "328907378433",
+      appId: "1:328907378433:web:876270513cbe1636895500"
+    };
+    firebase.initializeApp(firebaseConfig);
+    firebase.auth().signInAnonymously().catch(console.error);
+  </script>
+
+  <!-- App-Logik (Firebase-Version) -->
   <script src="app.js"></script>
 </body>
 </html>
