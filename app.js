@@ -3,7 +3,7 @@ function dlgOpen(d){ try{ if(d && d.showModal) d.showModal(); else d.style.displ
 function dlgClose(d){ try{ if(d && d.close) d.close(); else d.style.display='none'; }catch{ d.style.display='none'; } }
 
 // ===== Konstanten & Utils
-const DEC=2; const STORAGE_KEY='pst_v8';
+const DEC=2; const STORAGE_KEY='pst_v9';
 const DEFAULT_AVATAR = (()=>{ const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'>
   <rect width='256' height='256' fill='#0f1221'/><g transform='translate(128,128)'>
   <circle r='86' fill='#e43d30'/><circle r='68' fill='#ffffff'/><circle r='54' fill='#e43d30'/><circle r='24' fill='#ffffff'/></g></svg>`;
@@ -17,42 +17,131 @@ async function sha256Hex(str){
   if(window.crypto?.subtle){ const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
   let h=0; for(let i=0;i<str.length;i++){ h=((h<<5)-h)+str.charCodeAt(i); h|=0; } return ('00000000'+(h>>>0).toString(16)).slice(-8);
 }
-function isWeekday(iso){ const d=new Date(iso+"T00:00:00"); const w=d.getDay(); return w>=1 && w<=5; }
-function decDay(iso){ const d=new Date(iso+"T00:00:00"); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); }
+function dayIdx(iso){ return new Date(iso+"T00:00:00").getDay(); } // 0 So .. 6 Sa
+function isActiveDay(iso){ const d=dayIdx(iso); return !(state.streakWeekPause?.[d]); } // true = zählt regulär
 
 // ===== State & Model
 let state = load();
 let currentProfileId=null;
 let curTournamentId=null;
 
+// ===== Streak-Index & Cache (Performance)
+let streakCache = { byPid:new Map(), valid:false, key:'' };
+let dateMap = null; // Map<isoDate, { any:boolean, players:Set<pid> }>
+
 function load(){
   try{
     const raw=localStorage.getItem(STORAGE_KEY);
-    if(!raw) return {version:8, profiles:[], tournaments:[], streakPaused:false};
+    if(!raw) return {version:9, profiles:[], tournaments:[], streakWeekPause:{0:true,6:true}}; // Standard: So+Sa pausiert
     return migrate(normalize(JSON.parse(raw)));
-  }catch{ return {version:8, profiles:[], tournaments:[], streakPaused:false}; }
+  }catch{ return {version:9, profiles:[], tournaments:[], streakWeekPause:{0:true,6:true}}; }
 }
-function save(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
 function normalize(obj){
-  if(Array.isArray(obj)){
-    const profiles=[{id:'p1',name:'Lorenzo'},{id:'p2',name:'Jacki'},{id:'p3',name:'Arnold'},{id:'p4',name:'Jonny'}];
-    const tid='t1'; const rounds=(obj||[]).map(r=> ({id:uid('r'), date:r.date||r.datum||'', chips:r.chips||{}, complete:r.complete??true, comments:[]}));
-    return {version:8, streakPaused:false, profiles, tournaments:[{id:tid,name:'Stammtisch',startDate:rounds[0]?.date||'', players:profiles.map(p=>p.id), startChips:640, playerCount:4, admins:[], rounds}]};
+  // Unterstützt alte Objekt-Strukturen; kein Auto-Seed fixer Spieler
+  if (!obj || typeof obj!=='object' || Array.isArray(obj)){
+    return {version:9, streakWeekPause:{0:true,6:true}, profiles:[], tournaments:[]};
   }
-  return {version: obj.version||8, streakPaused: !!obj.streakPaused, profiles: Array.isArray(obj.profiles)? obj.profiles: [], tournaments: Array.isArray(obj.tournaments)? obj.tournaments: []};
+  return {
+    version: obj.version||9,
+    streakWeekPause: obj.streakWeekPause || {0:true,6:true},
+    profiles: Array.isArray(obj.profiles)? obj.profiles: [],
+    tournaments: Array.isArray(obj.tournaments)? obj.tournaments: []
+  };
 }
 function migrate(d){
-  d.version=8;
-  if(typeof d.streakPaused!=='boolean') d.streakPaused=false;
+  if(!d.version || d.version<9){
+    // v8->v9: streakPaused -> streakWeekPause (Default So+Sa pausiert)
+    d.streakWeekPause = d.streakWeekPause || (d.streakPaused ? {0:true,6:true} : {0:true,6:true});
+  }
+  d.version=9;
   d.profiles.forEach(p=>{ p.id=p.id||uid('p'); if(!p.avatarDataUrl) p.avatarDataUrl=DEFAULT_AVATAR; });
   d.tournaments.forEach(t=>{
     t.id=t.id||uid('t');
-    t.rounds=(t.rounds||[]).map(r=> ({...r, id:r.id||uid('r'), comments:r.comments||[]}));
+    t.rounds=(t.rounds||[]).map(r=> ({...r, id:r.id||uid('r'), comments:r.comments||[], streakPause:Array.isArray(r.streakPause)? r.streakPause: []}));
     if(!Array.isArray(t.admins)) t.admins=[];
     if(!t.startChips) t.startChips=640;
     if(!t.playerCount) t.playerCount=(t.players?.length)||4;
   });
   return d;
+}
+
+// ===== Streaks – performanter Rebuild & O(1)-Lookup
+function stateKeyForStreaks(){
+  const rounds = state.tournaments
+    .flatMap(t => (t.rounds||[]).map(r => ({ d:r.date, c:r.chips, sp:r.streakPause })))
+    .sort((a,b)=> (a.d||'').localeCompare(b.d||''));
+  return JSON.stringify({week:state.streakWeekPause||{}, rounds});
+}
+function buildDateMap(){
+  const map = new Map();
+  state.tournaments.forEach(t => {
+    (t.rounds||[]).forEach(r => {
+      const iso = r.date;
+      if(!iso) return;
+      let entry = map.get(iso);
+      if(!entry){ entry = { any:false, players:new Set() }; map.set(iso, entry); }
+      entry.any = true;
+      (t.players||[]).forEach(pid => {
+        const pausedForPid = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
+        const val = +r.chips?.[pid] || 0;
+        if(val > 0 && !pausedForPid) entry.players.add(pid); // zählt nur, wenn gespielt + nicht pausiert
+      });
+    });
+  });
+  return map;
+}
+function rebuildStreaks(){
+  const key = stateKeyForStreaks();
+  if(streakCache.valid && streakCache.key === key) return;
+
+  dateMap = buildDateMap();
+
+  const allDates = [...dateMap.keys()].sort();
+  const startIso = allDates[0] || new Date().toISOString().slice(0,10);
+  const todayIso = new Date().toISOString().slice(0,10);
+
+  const allPids = state.profiles.map(p => p.id);
+  const cur = new Map(); const best = new Map();
+  allPids.forEach(pid => { cur.set(pid,0); best.set(pid,0); });
+
+  for(let d=startIso;;){
+    const activeDay = isActiveDay(d); // globaler Pausetag?
+    const entry = dateMap.get(d);
+    const any = !!entry?.any;
+
+    if(activeDay){
+      allPids.forEach(pid => {
+        const me = !!entry?.players?.has(pid); // hat gespielt & nicht individuell pausiert
+        if(any){
+          if(me){
+            const nv = (cur.get(pid)||0)+1;
+            cur.set(pid,nv);
+            if(nv > (best.get(pid)||0)) best.set(pid,nv);
+          }else{
+            cur.set(pid,0);
+          }
+        } else {
+          // aktiver Tag ohne Spiel -> Streak bricht
+          cur.set(pid,0);
+        }
+      });
+    } // else: pausierter Tag -> keine Änderung
+
+    if(d===todayIso) break;
+    d = new Date(new Date(d+"T00:00:00").getTime()+86400000).toISOString().slice(0,10);
+  }
+
+  streakCache = {
+    byPid: new Map(allPids.map(pid => [pid, { current: cur.get(pid)||0, best: best.get(pid)||0 }])),
+    valid: true,
+    key
+  };
+}
+function computeStreaks(pid){
+  if(!pid) return {current:0, best:0};
+  rebuildStreaks();
+  return streakCache.byPid.get(pid) || {current:0, best:0};
 }
 
 // ===== DOM refs & view switch
@@ -66,64 +155,20 @@ function show(view){
   homeSec.classList.toggle('hidden', view!=='home');
   tourSec.classList.toggle('hidden', view!=='tournament');
   profSec.classList.toggle('hidden', view!=='profile');
-  document.getElementById('badgeInfo').textContent = (view==='tournament' && curTournamentId)
-    ? (()=>{ const t=state.tournaments.find(x=>x.id===curTournamentId); return `${t.playerCount*t.startChips} Chips · Wettbewerb`; })()
-    : '2560 Chips · Wettbewerb';
-  render(view);
-}
 
-// ===== Streaks
-function profilePlayedOn(pid, iso){
-  return state.tournaments.some(t =>
-    (t.players||[]).includes(pid) &&
-    (t.rounds||[]).some(r => r.date===iso && (+r.chips?.[pid]||0) > 0)
-  );
-}
-function anyPlayedOn(iso){
-  return state.tournaments.some(t => (t.rounds||[]).some(r => r.date===iso));
-}
-
-/** Liefert {current, best} – ab Tag 1 sichtbar; Leer-Werktage brechen, außer streakPaused = true */
-function computeStreaks(pid){
-  if(!pid) return {current:0, best:0};
-  // frühestes Datum bestimmen
-  const allDates = state.tournaments.flatMap(t => (t.rounds||[]).map(r=>r.date)).filter(Boolean).sort();
-  const startIso = allDates[0] || new Date().toISOString().slice(0,10);
-  const todayIso = new Date().toISOString().slice(0,10);
-
-  let cur=0, best=0;
-  // von start bis heute vorwärts iterieren
-  for(let d=startIso; ; d=new Date(new Date(d+"T00:00:00").getTime()+86400000).toISOString().slice(0,10)){
-    const weekday = isWeekday(d);
-    const any = anyPlayedOn(d);
-    const me = profilePlayedOn(pid,d);
-
-    if(weekday){
-      if(any){
-        if(me){ cur+=1; best=Math.max(best,cur); }
-        else { cur=0; }
-      } else {
-        if(state.streakPaused){ /* keine Änderung */ }
-        else { cur=0; }
-      }
-    }
-    if(d===todayIso) break;
-  }
-  // aktuellen Streak rückwärts absichern (falls heute WE und gestern gespielt, etc.)
-  let back= todayIso; while(!isWeekday(back)) back = decDay(back);
-  // wenn letzter betrachteter Werktag kein Spieltag und nicht pausiert -> current=0 (bereits durch forward abgedeckt)
-  return {current:cur, best};
+  document.body.dataset.loading = '1';
+  requestAnimationFrame(()=>{ render(view); document.body.dataset.loading = '0'; });
 }
 
 // ===== Render helpers
 function getProfile(pid){ return state.profiles.find(p=> p.id===pid); }
-function avatarImg(profile, size='avatar', withBadge=true){
+function avatarImg(profile, size='avatar', withBadge=true, overrideBadgeValue=null){
   const cls = size==='mini' ? 'avatar mini' : size==='mid' ? 'avatar mid' : size==='big' ? 'avatar big' : 'avatar';
   const src = profile?.avatarDataUrl || DEFAULT_AVATAR;
   const name = profile?.name || '';
   let badge = '';
   if(withBadge && profile?.id){
-    const st = computeStreaks(profile.id).current;
+    const st = (overrideBadgeValue!=null) ? overrideBadgeValue : computeStreaks(profile.id).current;
     if(st >= 1){ badge = `<span class="streakBadge">🔥 <b>${st}</b></span>`; }
   }
   return `<span class="avatarWrap"><img class="${cls}" src="${src}" alt="${name}">${badge}</span>`;
@@ -145,8 +190,7 @@ function computeTournamentInfo(t){
   if(!t || !Array.isArray(t.rounds) || t.rounds.length===0){
     return { last:null, hasIncomplete:false, hasOvershoot:false, total:(t?t.playerCount*t.startChips:2560) };
   }
-  const sorted=[...t.rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
-  const last=sorted[0];
+  const sorted=[...t.rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||'')); const last=sorted[0];
   const sum=(t.players||[]).reduce((a,p)=> a+(+last.chips?.[p]||0),0);
   const total=t.playerCount*t.startChips;
   const hasIncomplete = t.rounds.some(r=> (t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0) < total);
@@ -184,8 +228,6 @@ function render(activeView){
       wrap.querySelector('a').addEventListener('click', e=>{ e.preventDefault(); openTournament(t.id); });
       (inTour? my: other).appendChild(wrap);
     });
-    const btn=document.getElementById('toggleStreakPause');
-    btn.textContent = `🔥 Streak-Pause: ${state.streakPaused?'An':'Aus'}`;
   }
 
   if(!tourSec.classList.contains('hidden') && curTournamentId){
@@ -324,11 +366,11 @@ function renderTournament(tid){
   stats.players.sort((a,b)=> a.rank-b.rank).forEach(c=>{
     const medal = c.rank===1? '🥇': c.rank===2? '🥈': c.rank===3? '🥉': '';
     const prof = getProfile(c.id);
-    const stBest = computeStreaks(c.id).best;
+    const stVals = computeStreaks(c.id);
     const card=document.createElement('div'); card.className='card';
-    card.innerHTML = `<h3 title="Beste Serie: ${stBest}">${medal? medal+' ':''}${avatarImg(prof,'mini',true)} ${c.name}</h3>
+    card.innerHTML = `<h3 title="Beste Serie: ${stVals.best}">${medal? medal+' ':''}${avatarImg(prof,'mini',true,stVals.current)} ${c.name}</h3>
       <div class="sub">Ø Chips: <b>${Math.round(c.avgChips)}</b> · Ø %Stack: <b>${fmtPct(c.avgPct)}</b>%</div>
-      <div class="rankRow"><div>Platz <b>${c.rank}</b></div><div class="sub">Best 🔥 ${stBest}</div></div>
+      <div class="rankRow"><div>Platz <b>${c.rank}</b></div><div class="sub">Best 🔥 ${stVals.best}</div></div>
       <div class="bar"><span style="width:${clamp(c.avgPct,0,100)}%"></span></div>`;
     card.style.cursor='pointer'; card.addEventListener('click', ()=> openProfileView(c.id));
     leader.appendChild(card);
@@ -350,20 +392,22 @@ function renderTournament(tid){
     let html = '';
     const first = order[0];
     const pctFirst = sum? ((+r.chips?.[first]||0)/sum*100):0;
+    const firstPaused = Array.isArray(r.streakPause) && r.streakPause.includes(first);
     html += `
       <tr>
         <td style="min-width:120px;padding:0 8px 8px 8px" rowspan="${order.length}"><b>${fmtDate(r.date)}</b></td>
         <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[first]}</td>
-        <td style="padding:0 8px 4px 8px">${getProfile(first)?.name||'?'}</td>
+        <td style="padding:0 8px 4px 8px">${getProfile(first)?.name||'?'}${firstPaused?' <span class="sub">(Streak pausiert)</span>':''}</td>
         <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[first]||0}</b> · ${fmtPct(pctFirst)}%</span></td>
       </tr>`;
     for(let i=1;i<order.length;i++){
       const pid=order[i];
       const pct = sum? ((+r.chips?.[pid]||0)/sum*100):0;
+      const paused = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
       html += `
         <tr>
           <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[pid]}</td>
-          <td style="padding:0 8px 4px 8px">${getProfile(pid)?.name||'?'}</td>
+          <td style="padding:0 8px 4px 8px">${getProfile(pid)?.name||'?'}${paused?' <span class="sub">(Streak pausiert)</span>':''}</td>
           <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[pid]||0}</b> · ${fmtPct(pct)}%</span></td>
         </tr>`;
     }
@@ -390,25 +434,70 @@ function renderTournament(tid){
   document.querySelectorAll('[data-cmt-id]').forEach(b=> b.addEventListener('click', ()=> openComment(t.id, b.getAttribute('data-cmt-id'))));
 }
 
-// Runden CRUD
+// Runden CRUD + Rest auffüllen + pro-Spieler Streak-Pause
 document.getElementById('addRoundBtn').addEventListener('click', ()=> openRoundEdit(curTournamentId, null));
 function openRoundEdit(tid, rid){
   const t=state.tournaments.find(x=> x.id===tid); if(!t) return alert('Turnier fehlt');
   if(!(t.admins||[]).includes(currentProfileId)) return alert('Nur Turnier-Admin');
   const dlg=document.getElementById('dlgRound'); const form=document.getElementById('roundForm'); form.innerHTML='';
-  const r = rid? t.rounds.find(x=> x.id===rid) : {date:new Date().toISOString().slice(0,10), chips:{}};
-  const date=`<label>Datum<input type="date" id="r_date" value="${r.date}"></label>`; const grid=document.createElement('div'); grid.className='grid2';
-  (t.players||[]).forEach(pid=>{ const name=getProfile(pid)?.name||'?'; const val=+r.chips?.[pid]||0; const row=document.createElement('div'); row.innerHTML=`<label>${name} (Chips)<input type="number" min="0" step="1" data-chip="${pid}" value="${val}"></label>`; grid.appendChild(row); });
-  form.insertAdjacentHTML('beforeend', date); form.appendChild(grid);
-  const sumHint=document.getElementById('sumHint'); function upd(){ const sum=(t.players||[]).reduce((a,pid)=> a+(+form.querySelector(`[data-chip="${pid}"]`).value||0),0); const target=t.playerCount*t.startChips; const diff=target-sum; sumHint.textContent = diff===0? `✓ Alles gut — Summe: ${sum} / ${target}` : (diff>0? `Es fehlen noch ${diff} Chips — Summe: ${sum} / ${target}` : `${-diff} Chips zu viel — Summe: ${sum} / ${target}`); sumHint.style.color = diff===0? 'var(--good)': (diff>0? '#ffd79c':'#ffb2b2'); }
-  form.querySelectorAll('input[type="number"]').forEach(i=> i.addEventListener('input', upd)); upd();
+  const r = rid? t.rounds.find(x=> x.id===rid) : {date:new Date().toISOString().slice(0,10), chips:{}, streakPause:[]};
+  const date=`<label>Datum<input type="date" id="r_date" value="${r.date}"></label>`;
+  const grid=document.createElement('div'); grid.className='grid2';
+
+  (t.players||[]).forEach(pid=>{
+    const name=getProfile(pid)?.name||'?';
+    const val=+r.chips?.[pid]||0;
+    const paused = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
+    const row=document.createElement('div');
+    row.innerHTML=`
+      <label>${name} (Chips)
+        <input type="number" min="0" step="1" data-chip="${pid}" value="${val}">
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px">
+        <input type="checkbox" data-spause="${pid}" ${paused?'checked':''}>
+        <span>Streak heute pausieren</span>
+      </label>`;
+    grid.appendChild(row);
+  });
+
+  form.insertAdjacentHTML('beforeend', date);
+  form.appendChild(grid);
+
+  const sumHint=document.getElementById('sumHint');
+  function computeSum(){
+    return (t.players||[]).reduce((a,pid)=> a+(+form.querySelector(`[data-chip="${pid}"]`).value||0),0);
+  }
+  function upd(){
+    const sum=computeSum();
+    const target=t.playerCount*t.startChips; const diff=target-sum;
+    sumHint.textContent = diff===0? `✓ Alles gut — Summe: ${sum} / ${target}` : (diff>0? `Es fehlen noch ${diff} Chips — Summe: ${sum} / ${target}` : `${-diff} Chips zu viel — Summe: ${sum} / ${target}`);
+    sumHint.style.color = diff===0? 'var(--good)': (diff>0? '#ffd79c':'#ffb2b2');
+  }
+  form.querySelectorAll('input[type="number"]').forEach(i=> i.addEventListener('input', upd));
+  upd();
+
+  // Rest auffüllen
+  document.getElementById('btnFillRest').onclick=()=>{
+    const target=t.playerCount*t.startChips;
+    let sum=computeSum();
+    let rest = target - sum;
+    if(rest<=0) return;
+    const fields = (t.players||[]).map(pid=> form.querySelector(`[data-chip="${pid}"]`));
+    const n = fields.length;
+    const base = Math.floor(rest / n);
+    const extra = rest % n;
+    fields.forEach((inp, idx)=>{ inp.value = (+inp.value||0) + base + (idx<extra?1:0); });
+    upd();
+  };
+
   dlgOpen(dlg);
   document.getElementById('roundCancel').onclick=()=> dlgClose(dlg);
   document.getElementById('roundSave').onclick=()=>{
     const date=(document.getElementById('r_date').value)||new Date().toISOString().slice(0,10);
     const chips={}; (t.players||[]).forEach(pid=> chips[pid]= +(form.querySelector(`[data-chip="${pid}"]`).value||0));
+    const streakPause=(t.players||[]).filter(pid=> form.querySelector(`[data-spause="${pid}"]`)?.checked);
     const sum=Object.values(chips).reduce((a,b)=> a+b,0);
-    const obj={ id: rid||uid('r'), date, chips, complete:(sum===t.playerCount*t.startChips), comments:r.comments||[] };
+    const obj={ id: rid||uid('r'), date, chips, complete:(sum===t.playerCount*t.startChips), comments:r.comments||[], streakPause };
     if(rid){ const i=t.rounds.findIndex(x=> x.id===rid); if(i>=0) t.rounds[i]=obj; } else t.rounds.push(obj);
     save(); dlgClose(dlg); render('tournament');
   };
@@ -428,43 +517,170 @@ document.getElementById('btnTourSettings').addEventListener('click', ()=>{
   document.getElementById('setSave').onclick=()=>{ t.startChips=Math.max(1,+document.getElementById('setStartChips').value||t.startChips); t.playerCount=Math.max(2,+document.getElementById('setPlayerCount').value||t.playerCount); t.admins=[...wrap.querySelectorAll('input:checked')].map(i=> i.value); save(); dlgClose(dlg); render('tournament'); };
 });
 
-// Datei öffnen/speichern
+// Globale Streak-Einstellungen (Woche)
+document.getElementById('btnStreakSettings').addEventListener('click', ()=>{
+  const dlg=document.getElementById('dlgStreakSettings');
+  const grid=document.getElementById('weekPauseGrid'); grid.innerHTML='';
+  const names=['So','Mo','Di','Mi','Do','Fr','Sa']; // 0..6
+  for(let i=0;i<7;i++){
+    const lab=document.createElement('label'); lab.style.display='flex'; lab.style.alignItems='center'; lab.style.gap='8px';
+    const checked = !!state.streakWeekPause?.[i];
+    lab.innerHTML = `<input type="checkbox" data-wday="${i}" ${checked?'checked':''}> <b>${names[i]}</b> <span class="sub">(pausiert)</span>`;
+    grid.appendChild(lab);
+  }
+  dlgOpen(dlg);
+  document.getElementById('streakCancel').onclick=()=> dlgClose(dlg);
+  document.getElementById('streakSave').onclick=()=>{
+    const obj={};
+    document.querySelectorAll('[data-wday]').forEach(inp=>{
+      const i=+inp.getAttribute('data-wday'); obj[i]=inp.checked;
+    });
+    state.streakWeekPause = obj;
+    save();
+    dlgClose(dlg);
+    render(!tourSec.classList.contains('hidden')?'tournament':(!authSec.classList.contains('hidden')?'auth':'home'));
+  };
+});
+
+// ====== File-System-Integration: Persistenter Handle, Auto-Save, Locks ======
+const DB_NAME = 'pst_handles'; const STORE = 'handles';
 let currentHandle=null;
+let currentFileMeta = null;      // { lastModified:number, size:number }
+let autosaveTimer = null;
+let writeLockActive = false;
+const bc = ('BroadcastChannel' in window) ? new BroadcastChannel('pst_channel') : null;
+const THIS_TAB_ID = 'tab_' + Math.random().toString(36).slice(2);
+
+// IndexedDB Mini-Wrapper
+function idbOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open(DB_NAME,1); r.onupgradeneeded=()=> r.result.createObjectStore(STORE); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+async function idbGet(key){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction(STORE,'readonly'); const st=tx.objectStore(STORE); const r=st.get(key); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+async function idbSet(key,val){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction(STORE,'readwrite'); const st=tx.objectStore(STORE); const r=st.put(val,key); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+async function idbDel(key){ const db=await idbOpen(); return new Promise((res,rej)=>{ const tx=db.transaction(STORE,'readwrite'); const st=tx.objectStore(STORE); const r=st.delete(key); r.onsuccess=()=>res(); r.onerror=()=>rej(r.error); }); }
+
+// Web Locks (nur ein Schreiber pro Browser)
+async function acquireWriteLock(){
+  if(!('locks' in navigator)) { writeLockActive = true; return true; }
+  const res = await navigator.locks.request('pst_write_lock', { ifAvailable:true, mode:'exclusive' }, lock => {
+    if(!lock) return null;
+    writeLockActive = true;
+    return true;
+  });
+  if(!res){ writeLockActive=false; alert('Die Datei ist in einem anderen Tab schreibgeschützt geöffnet. Dieser Tab bleibt schreibgeschützt.'); }
+  return !!res;
+}
+bc && (bc.onmessage = ev=>{
+  if(ev?.data?.type==='who_has_lock' && writeLockActive) bc.postMessage({type:'i_have_lock', from:THIS_TAB_ID});
+});
+function announceLockProbe(){ bc && bc.postMessage({type:'who_has_lock', from:THIS_TAB_ID}); }
+
+// Datei öffnen (persistenter Handle)
 document.getElementById('openBtn').addEventListener('click', openFromPicker);
-document.getElementById('saveBtn').addEventListener('click', saveToPicker);
 async function openFromPicker(){
   try{
-    if('showOpenFilePicker' in window){
-      const [h]=await window.showOpenFilePicker({ types:[{description:'JSON',accept:{'application/json':['.json']}}]});
-      const f=await h.getFile(); const text=await f.text(); state=migrate(normalize(JSON.parse(text))); currentHandle=h; save(); show('auth');
-    } else {
+    if(!('showOpenFilePicker' in window)){ // Fallback: alter Datei-Input
       const inp=document.createElement('input'); inp.type='file'; inp.accept='.json,application/json';
-      inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; try{ state=migrate(normalize(JSON.parse(await f.text()))); save(); show('auth'); }catch{ alert('Ungültige Datei'); } };
-      inp.click();
+      inp.onchange=async()=>{ const f=inp.files[0]; if(!f) return; try{
+        state=migrate(normalize(JSON.parse(await f.text()))); save(); show('auth');
+        currentHandle=null; currentFileMeta={ lastModified:f.lastModified, size:f.size };
+        await idbDel('lastHandle');
+      }catch{ alert('Ungültige Datei'); } };
+      inp.click(); return;
     }
+    const [h]=await window.showOpenFilePicker({ types:[{description:'JSON',accept:{'application/json':['.json']}}]});
+    await h.requestPermission?.({mode:'readwrite'});
+    const f=await h.getFile(); const text=await f.text();
+    state = migrate(normalize(JSON.parse(text)));
+    save(); show('auth');
+    currentHandle = h;
+    currentFileMeta = { lastModified:f.lastModified, size:f.size };
+    await idbSet('lastHandle', h);
+    await acquireWriteLock();
+    announceLockProbe();
   }catch(e){}
 }
+
+// Speichern-Button: schreibt in aktuelle Datei, sonst „Speichern unter…“
+document.getElementById('saveBtn').addEventListener('click', saveToPicker);
 async function saveToPicker(){
+  if(currentHandle){ await writeToCurrentFile(); return; }
   const data=JSON.stringify(state,null,2);
-  if(currentHandle&&'createWritable' in currentHandle){ const w=await currentHandle.createWritable(); await w.write(data); await w.close(); flashSaved(); return; }
   if('showSaveFilePicker' in window){
     const h=await window.showSaveFilePicker({ suggestedName:'poker_rounds.json', types:[{description:'JSON',accept:{'application/json':['.json']}}]});
-    const w=await h.createWritable(); await w.write(data); await w.close(); currentHandle=h; flashSaved(); return;
+    const w=await h.createWritable(); await w.write(data); await w.close();
+    currentHandle = h;
+    const nf = await h.getFile();
+    currentFileMeta={ lastModified:nf.lastModified, size:nf.size };
+    await idbSet('lastHandle', h);
+    await acquireWriteLock();
+    flashSaved();
+    return;
   }
   const blob=new Blob([data],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='poker_rounds.json'; a.click(); URL.revokeObjectURL(url); alert('Gespeichert (Download). Auf iPhone/iPad bitte die Datei in iCloud Drive ablegen/ersetzen.');
 }
+
+async function writeToCurrentFile(){
+  if(!currentHandle) return;
+  if(!writeLockActive) return; // schreibgeschützt (anderer Tab)
+  try{
+    const disk = await currentHandle.getFile();
+    if(currentFileMeta && disk.lastModified > (currentFileMeta.lastModified||0)){
+      const ok = confirm('Die Datei wurde extern geändert. Jetzt neu laden (OK) oder meinen Stand überschreiben (Abbrechen)?');
+      if(ok){
+        const text=await disk.text();
+        state=migrate(normalize(JSON.parse(text)));
+        save(); show('auth');
+        currentFileMeta={ lastModified:disk.lastModified, size:disk.size };
+        return;
+      }
+      // sonst bewusst überschreiben
+    }
+    const w=await currentHandle.createWritable({ keepExistingData:false });
+    await w.write(JSON.stringify(state,null,2));
+    await w.close();
+    const nf=await currentHandle.getFile();
+    currentFileMeta={ lastModified:nf.lastModified, size:nf.size };
+    flashSaved();
+  }catch(e){ console.error(e); }
+}
+
+function scheduleAutosave(){
+  if(!currentHandle) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(writeToCurrentFile, 500); // 0,5s Debounce
+}
 function flashSaved(){ const btn=document.getElementById('saveBtn'); const old=btn.textContent; btn.textContent='✅ Gespeichert'; setTimeout(()=> btn.textContent=old,1200); }
 
-// Streak-Pause Toggle
-document.getElementById('toggleStreakPause').addEventListener('click', ()=>{
-  state.streakPaused = !state.streakPaused;
-  save();
-  document.getElementById('toggleStreakPause').textContent = `🔥 Streak-Pause: ${state.streakPaused?'An':'Aus'}`;
-  // Re-Render, damit Badges neu sind
-  const view = !tourSec.classList.contains('hidden') ? 'tournament' : (!authSec.classList.contains('hidden') ? 'auth' : 'home');
-  render(view);
-});
+// ===== save(): speichert lokal & triggert Autosave
+function save(){
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  streakCache.valid = false;
+  rebuildStreaks();
+  scheduleAutosave();
+}
 
-// Init
-document.getElementById('btnLoginProfile').addEventListener('click', showLoginList);
+// Warnung beim Schließen, wenn Save geplant
+window.addEventListener('beforeunload',(e)=>{ if(currentHandle && autosaveTimer){ e.preventDefault(); e.returnValue=''; } });
+
+// ===== Init
 show('auth');
+rebuildStreaks();
+
+// Zuletzt genutzten File-Handle automatisch laden (Chrome/Edge)
+;(async ()=>{
+  const h = await idbGet('lastHandle');
+  if(!h) return;
+  try{
+    const perm = await h.queryPermission?.({mode:'readwrite'}) || 'prompt';
+    if(perm==='granted' || await h.requestPermission?.({mode:'readwrite'})==='granted'){
+      const f=await h.getFile(); const text=await f.text();
+      state = migrate(normalize(JSON.parse(text)));
+      save(); show('auth');
+      currentHandle = h;
+      currentFileMeta = { lastModified:f.lastModified, size:f.size };
+      await acquireWriteLock();
+      announceLockProbe();
+    }
+  }catch(e){
+    await idbDel('lastHandle'); // Handle ungültig (verschoben/gelöscht)
+  }
+})();

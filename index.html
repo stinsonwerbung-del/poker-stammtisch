@@ -63,24 +63,25 @@
     .form label{font-size:12px;color:var(--muted)}
     .form input[type="date"], .form input[type="number"], .form input[type="password"], .form input[type="text"], .form input[type="file"], .form select{width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text)}
     .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+    .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
     .hidden{display:none}
     .ok{color:var(--good)}
     .bad{color:var(--bad)}
+    footer{margin:30px 0 20px; text-align:center; color:var(--muted);}
     @media print {
-      header, .btn, .status, #btnLogout { display:none !important; }
+      header, .btn, .status, #btnLogout, footer { display:none !important; }
       body { background:#fff; color:#000; }
       .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
       .container { max-width:100%; margin:0; padding:0 8px; }
       .tbl { border-spacing:0; }
       .row { background:#fff; border-color:#ccc; }
     }
+    [data-loading="1"] { cursor: progress; }
   </style>
 </head>
 <body>
   <header>
-    <div>
-      <h1>Poker-Stammtisch <span class="badge" id="badgeInfo">2560 Chips · Wettbewerb</span></h1>
-    </div>
+    <div><h1>Poker-Stammtisch</h1></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn secondary" id="openBtn">📂 Öffnen</button>
       <button class="btn secondary" id="saveBtn">💾 Speichern</button>
@@ -108,7 +109,7 @@
       <div class="status">
         <span class="pill" id="whoPill">Eingeloggt als: —</span>
         <button class="btn small ghost" id="btnEditSelf">Profil bearbeiten</button>
-        <button class="btn small ghost" id="toggleStreakPause">🔥 Streak-Pause: Aus</button>
+        <button class="btn small ghost" id="btnStreakSettings">🔥 Streak-Einstellungen</button>
         <button class="btn small ghost" id="btnLogout">Abmelden</button>
       </div>
       <div class="grid">
@@ -217,6 +218,8 @@
     </section>
   </div>
 
+  <footer>(c) Brenner</footer>
+
   <!-- DIALOGE -->
   <dialog id="dlgTournament">
     <div class="modal">
@@ -245,7 +248,11 @@
     <div class="modal">
       <h2 id="dlgRoundTitle">Neue Runde</h2>
       <div id="roundForm" class="form"></div>
-      <div id="sumHint" class="sub">Summe: 0</div>
+      <div class="grid3">
+        <button class="btn ghost" id="btnFillRest">↗️ Rest auffüllen</button>
+        <div id="sumHint" class="sub" style="align-self:center">Summe: 0</div>
+        <div></div>
+      </div>
       <div class="modalFooter">
         <button class="btn secondary" id="roundCancel">Abbrechen</button>
         <button class="btn" id="roundSave">Speichern</button>
@@ -300,6 +307,20 @@
       <div class="modalFooter">
         <button class="btn secondary" id="setCancel">Abbrechen</button>
         <button class="btn" id="setSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgStreakSettings">
+    <div class="modal">
+      <h2>Streak-Einstellungen (global)</h2>
+      <div class="form">
+        <div class="sub">Angehakte Wochentage werden <b>pausiert</b> (zählen nicht, brechen nicht).</div>
+        <div class="grid3" id="weekPauseGrid"></div>
+      </div>
+      <div class="modalFooter">
+        <button class="btn secondary" id="streakCancel">Abbrechen</button>
+        <button class="btn" id="streakSave">Speichern</button>
       </div>
     </div>
   </dialog>
