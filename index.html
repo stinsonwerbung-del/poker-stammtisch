@@ -1,22 +1,21 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Poker-Stammtisch</title>
   <style>
     :root{
       --bg:#0f1221; --panel:#161a33; --panel2:#1b2040; --text:#e9ecf2; --muted:#aeb6cf;
       --accent:#6ee7ff; --accent2:#8b5cff; --good:#2ecc71; --bad:#e74c3c; --warn:#f1c40f;
-      --chip:#232a57; --orange:#7c4e16; --red:#8a2a3b; --gray:#cfd4e3;
-      --selectBg:#0e1230; --selectBorder:#293062; --selectArrow:#6ee7ff;
-      --pdfBar:#666; /* sichtbares Grau in PDF */
+      --chip:#232a57; --orange:#7c4e16; --red:#8a2a3b;
     }
     *{box-sizing:border-box}
     body{margin:0;background:linear-gradient(135deg,#0b0e1a,#131a34 40%,#0b0e1a);color:var(--text);
          font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
     header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #23274d;background:linear-gradient(180deg,#141939,#121634);}
     h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px;}
+    .badge{font-size:12px;color:var(--muted)}
     .btn{background:linear-gradient(135deg,var(--accent),#5fb4ff);color:#041224;border:none;padding:9px 12px;border-radius:12px;font-weight:700;box-shadow:0 6px 18px rgba(110,231,255,.15);cursor:pointer}
     .btn.small{ padding:6px 10px; border-radius:10px; font-size:12px }
     .btn.danger{ background:linear-gradient(135deg,#7a2430,#b9313f); color:#fff }
@@ -37,7 +36,6 @@
     .rankRow{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
     .bar{height:10px;background:var(--chip);border-radius:999px;overflow:hidden;margin-top:8px;}
     .bar>span{display:block;height:100%;background:linear-gradient(90deg,#6ee7ff,#8b5cff);width:0%;transition:width .4s ease}
-    .bar.gray>span{background:var(--pdfBar);} /* PDF-optimiert in Grau */
     .avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid #2b2f63;background:#1a1f44;display:inline-block}
     .avatar.big{width:64px;height:64px;border-width:2px}
     .avatar.mid{width:36px;height:36px}
@@ -50,16 +48,14 @@
       display:flex; align-items:center; gap:2px; line-height:1
     }
     .streakBadge b{ font-weight:800 }
-    select{
-      background:var(--selectBg); color:var(--text); border:1px solid var(--selectBorder);
-      border-radius:10px; padding:6px 8px; appearance:none;
-      background-image: linear-gradient(45deg, transparent 50%, var(--selectArrow) 50%),
-                        linear-gradient(135deg, var(--selectArrow) 50%, transparent 50%);
-      background-position: calc(100% - 15px) calc(1em + 2px),
-                           calc(100% - 10px) calc(1em + 2px);
-      background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
-    }
-    input:focus,select:focus{outline:none;box-shadow:none}
+    .tbl{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px}
+    .row{background:linear-gradient(180deg,var(--panel2),#141939);border:1px solid #222752;border-radius:12px;overflow:hidden}
+    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:var(--orange)}
+    .row.overshoot{background:linear-gradient(180deg,#2a1b24,#2b1420);border-color:var(--red)}
+    .row td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
+    .row tr:last-child td{border-bottom:none}
+    .footerFlex{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+    #roundsTableWrap{overflow-x:auto}
     dialog{border:none;border-radius:16px;padding:0;background:linear-gradient(180deg,#111633,#0f1430);color:var(--text);box-shadow:0 20px 60px rgba(0,0,0,.5)}
     .modal{padding:14px;border:1px solid #222752;border-radius:16px}
     .modal h2{margin:0 0 8px 0;font-size:18px}
@@ -70,21 +66,39 @@
     .hidden{display:none}
     .ok{color:var(--good)}
     .bad{color:var(--bad)}
-    footer{margin-top:30px;text-align:center;color:var(--muted);font-size:12px}
+    .header-avatar-btn{
+      width:40px; height:40px; border-radius:50%;
+      padding:0; background:transparent; border:1px solid #3a406f; cursor:pointer;
+      display:grid; place-items:center;
+    }
+    .header-avatar-btn img{
+      width:36px; height:36px; border-radius:50%; object-fit:cover;
+      display:block;
+    }
+    footer{margin:20px 0;text-align:center;font-size:12px;color:var(--muted);}
+    @media print {
+      header, .btn, .status, #btnLogout { display:none !important; }
+      body { background:#fff; color:#000; }
+      .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
+      .container { max-width:100%; margin:0; padding:0 8px; }
+      .tbl { border-spacing:0; }
+      .row { background:#fff; border-color:#ccc; }
+    }
   </style>
 </head>
 <body>
   <header>
     <div><h1>Poker-Stammtisch</h1></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <!-- Header-Profil -->
+      <!-- Nur Profil-Button -->
       <button id="btnHeaderProfile" title="Profil & Quick-View" class="header-avatar-btn hidden">
-        <img id="headerAvatar" alt="Profil"/>
+        <img id="headerAvatar" alt="Profil" />
       </button>
     </div>
   </header>
+
   <div class="container">
-    <!-- AUTH LANDING -->
+    <!-- AUTH -->
     <section id="view_auth">
       <div style="display:flex;gap:20px;flex-wrap:wrap;justify-content:center;margin:30px 0">
         <div style="text-align:center">
@@ -92,7 +106,9 @@
                   style="width:120px;height:120px;border-radius:60px;display:grid;place-items:center;font-size:28px">👥</button>
           <div class="sub" style="margin-top:6px">Profil wählen</div>
           <div style="margin-top:10px">
-            <a href="#" id="linkRegister" class="sub" style="text-decoration:underline">Registrieren</a><br/>
+            <a href="#" id="linkRegister" class="sub" style="text-decoration:underline">Registrieren</a>
+          </div>
+          <div style="margin-top:6px">
             <a href="#" id="linkOtherProfile" class="sub" style="text-decoration:underline">Anderes Profil wählen</a>
           </div>
         </div>
@@ -114,28 +130,22 @@
         </div>
         <div class="card" style="grid-column: span 3">
           <h3>🏆 Deine Turniere</h3>
-          <div class="sub">Turniere, in denen dein Profil spielt</div>
           <div id="myTournamentList" style="margin-top:8px"></div>
-          <div style="margin-top:14px"></div>
-          <h3 style="margin-top:10px">👀 Laufende Turniere (ohne Teilnahme)</h3>
-          <div class="sub">Zum Anschauen oder Beitritt anfragen</div>
+          <h3 style="margin-top:16px">👀 Laufende Turniere</h3>
           <div id="otherTournamentList" style="margin-top:8px"></div>
         </div>
       </div>
-      <div style="margin-top:20px">
-        <button class="btn secondary" id="btnAllTime">📊 All-Time-Bester</button>
-      </div>
+      <div style="margin-top:20px"><button class="btn secondary" id="btnAllTime">📈 All-Time Bester</button></div>
     </section>
 
     <!-- TURNIER -->
     <section id="view_tournament" class="hidden">
-      <div class="status" id="tourStatus">
+      <div class="status">
         <span class="pill" id="scopePill">Ansicht: Turnier</span>
         <span class="pill" id="sumState">Letzte Runde: —</span>
-        <span class="pill warn" id="flagIncomplete" style="display:none">Unvollständig</span>
-        <span class="pill bad" id="flagOvershoot" style="display:none">Überschüssig</span>
+        <span class="pill warn hidden" id="flagIncomplete">Unvollständig</span>
+        <span class="pill bad hidden" id="flagOvershoot">Überschüssig</span>
       </div>
-
       <div class="card">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
           <div>
@@ -149,64 +159,46 @@
           </div>
         </div>
       </div>
-
       <section style="margin-top:10px">
         <h2 style="font-size:18px;margin:8px 0 10px">Gesamt-Leaderboard</h2>
         <div class="grid" id="leaderGrid"></div>
       </section>
-
       <section>
         <h2 style="font-size:18px;margin:12px 0 8px">Runden</h2>
         <div id="roundsTableWrap">
           <table class="tbl" id="roundsTable">
-            <thead>
-              <tr>
-                <th style="min-width:120px">Datum</th>
-                <th style="min-width:150px">Rang (Runde)</th>
-                <th>Spieler</th>
-                <th style="min-width:260px">Werte</th>
-              </tr>
-            </thead>
+            <thead><tr>
+              <th>Datum</th><th>Rang</th><th>Spieler</th><th>Werte</th>
+            </tr></thead>
             <tbody id="roundsBody"></tbody>
           </table>
         </div>
       </section>
     </section>
 
-    <!-- PROFILE VIEW -->
+    <!-- PROFIL -->
     <section id="view_profile" class="hidden">
       <div class="card">
         <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
           <div>
-            <h3 id="profTitle" style="margin:0"></h3>
+            <h3 id="profTitle"></h3>
             <div class="sub" id="profSub"></div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <select id="profScopeSel">
-              <option value="all">Gesamt (alle Turniere)</option>
-            </select>
+            <select id="profScopeSel"><option value="all">Gesamt</option></select>
             <button class="btn" id="profPdf">📄 PDF</button>
             <button class="btn secondary" id="profBack">← Zurück</button>
           </div>
         </div>
       </div>
-
-      <div class="grid" id="profKpis" style="margin-top:10px"></div>
-
       <div class="card" style="margin-top:10px">
-        <div class="bar gray" style="height:40px"><div id="pv_spark" style="display:flex;height:100%;gap:3px"></div></div>
-        <div class="sub" style="margin-top:6px">%Stack Verlauf (chronologisch)</div>
+        <div class="bar" style="height:40px"><div id="pv_spark" style="display:flex;height:100%;gap:3px"></div></div>
+        <div class="sub">%Stack Verlauf</div>
       </div>
-
       <div class="card" style="margin-top:10px">
         <table class="tbl" style="margin-top:0">
           <thead><tr>
-            <th style="width:120px">Datum</th>
-            <th style="width:160px">Turnier</th>
-            <th style="width:90px">Rang</th>
-            <th style="width:90px">Chips</th>
-            <th style="width:90px">%Stack</th>
-            <th style="width:120px">Status</th>
+            <th>Datum</th><th>Turnier</th><th>Rang</th><th>Chips</th><th>%Stack</th><th>Status</th>
           </tr></thead>
           <tbody id="profRows"></tbody>
         </table>
@@ -219,7 +211,6 @@
   <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
   <script>
     const firebaseConfig = {
       apiKey: "AIzaSyBDl3rpU3GjTb_c9rzzHQ04FCMAsBPVbYg",
@@ -232,8 +223,6 @@
     };
     firebase.initializeApp(firebaseConfig);
   </script>
-
-  <!-- App Script -->
   <script src="app.js"></script>
 </body>
 </html>
