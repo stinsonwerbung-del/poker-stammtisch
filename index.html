@@ -15,7 +15,6 @@
          font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
     header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #23274d;background:linear-gradient(180deg,#141939,#121634);}
     h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px;}
-    .badge{font-size:12px;color:var(--muted)}
     .btn{background:linear-gradient(135deg,var(--accent),#5fb4ff);color:#041224;border:none;padding:9px 12px;border-radius:12px;font-weight:700;box-shadow:0 6px 18px rgba(110,231,255,.15);cursor:pointer}
     .btn.small{ padding:6px 10px; border-radius:10px; font-size:12px }
     .btn.danger{ background:linear-gradient(135deg,#7a2430,#b9313f); color:#fff }
@@ -33,7 +32,6 @@
     .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid #222752;padding:12px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
     .card h3{margin:0 0 4px 0;font-size:16px}
     .sub{font-size:12px;color:var(--muted);}
-    .rankRow{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
     .bar{height:10px;background:var(--chip);border-radius:999px;overflow:hidden;margin-top:8px;}
     .bar>span{display:block;height:100%;background:linear-gradient(90deg,#6ee7ff,#8b5cff);width:0%;transition:width .4s ease}
     .avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid #2b2f63;background:#1a1f44;display:inline-block}
@@ -41,17 +39,27 @@
     .avatar.mid{width:36px;height:36px}
     .avatar.mini{width:20px;height:20px}
     .avatarWrap{ position:relative; display:inline-block }
-    .streakBadge{
-      position:absolute; right:-4px; bottom:-4px;
-      background:#ff7a00; color:#fff; border-radius:999px;
-      font-size:10px; padding:1px 5px; border:2px solid #1a1f44;
-      display:flex; align-items:center; gap:2px; line-height:1
+    .header-avatar-btn{
+      width:40px; height:40px; border-radius:50%;
+      padding:0; background:transparent; border:1px solid #3a406f; cursor:pointer;
+      display:grid; place-items:center;
     }
-    .streakBadge b{ font-weight:800 }
+    .header-avatar-btn img{
+      width:36px; height:36px; border-radius:50%; object-fit:cover; display:block;
+    }
+    footer{margin:20px 0;text-align:center;font-size:12px;color:var(--muted);}
+    @media print {
+      header, .btn, .status, #btnLogout { display:none !important; }
+      body { background:#fff; color:#000; }
+      .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
+      .container { max-width:100%; margin:0; padding:0 8px; }
+      .tbl { border-spacing:0; }
+      .row { background:#fff; border-color:#ccc; }
+    }
     .tbl{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px}
     .row{background:linear-gradient(180deg,var(--panel2),#141939);border:1px solid #222752;border-radius:12px;overflow:hidden}
-    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:var(--orange)}
-    .row.overshoot{background:linear-gradient(180deg,#2a1b24,#2b1420);border-color:var(--red)}
+    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:#7c4e16}
+    .row.overshoot{background:linear-gradient(180deg,#2a1b24,#2b1420);border-color:#8a2a3b}
     .row td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
     .row tr:last-child td{border-bottom:none}
     .footerFlex{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
@@ -66,31 +74,13 @@
     .hidden{display:none}
     .ok{color:var(--good)}
     .bad{color:var(--bad)}
-    .header-avatar-btn{
-      width:40px; height:40px; border-radius:50%;
-      padding:0; background:transparent; border:1px solid #3a406f; cursor:pointer;
-      display:grid; place-items:center;
-    }
-    .header-avatar-btn img{
-      width:36px; height:36px; border-radius:50%; object-fit:cover;
-      display:block;
-    }
-    footer{margin:20px 0;text-align:center;font-size:12px;color:var(--muted);}
-    @media print {
-      header, .btn, .status, #btnLogout { display:none !important; }
-      body { background:#fff; color:#000; }
-      .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
-      .container { max-width:100%; margin:0; padding:0 8px; }
-      .tbl { border-spacing:0; }
-      .row { background:#fff; border-color:#ccc; }
-    }
   </style>
 </head>
 <body>
   <header>
     <div><h1>Poker-Stammtisch</h1></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <!-- Nur Profil-Button -->
+      <!-- Header-Profil (nur nach Login sichtbar) -->
       <button id="btnHeaderProfile" title="Profil & Quick-View" class="header-avatar-btn hidden">
         <img id="headerAvatar" alt="Profil" />
       </button>
@@ -206,11 +196,139 @@
     </section>
   </div>
 
+  <!-- DIALOGE (Modals) -->
+  <dialog id="dlgTournament">
+    <div class="modal">
+      <h2>Turnier erstellen</h2>
+      <div class="form">
+        <label>Name <input type="text" id="tourName" placeholder="z. B. Herbst 2025" /></label>
+        <label>Startdatum <input type="date" id="tourDate" /></label>
+        <div class="grid2">
+          <label>Start-Chips pro Person <input type="number" id="tourStartChips" value="640" min="1" step="1" /></label>
+          <label>Soll-Spielerzahl <input type="number" id="tourPlayerCount" value="4" min="2" step="1" /></label>
+        </div>
+        <div>
+          <label>Spieler (Profile auswählen)</label>
+          <div id="tourPlayers" class="grid2"></div>
+        </div>
+        <div class="sub">Hinweis: Du wirst automatisch Turnier-Admin. Weitere Admins kannst du später festlegen.</div>
+      </div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="tourCancel">Abbrechen</button>
+        <button class="btn" id="tourCreate">Erstellen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgRound">
+    <div class="modal">
+      <h2 id="dlgRoundTitle">Neue Runde</h2>
+      <div id="roundForm" class="form"></div>
+      <div class="grid2">
+        <label>Dauer (Minuten)
+          <input type="number" id="r_duration" min="0" step="1" placeholder="z. B. 45" />
+        </label>
+        <label>Kommentar
+          <input type="text" id="r_comment" placeholder="kurze Notiz …" />
+        </label>
+      </div>
+      <div id="sumHint" class="sub">Summe: 0</div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="roundCancel">Abbrechen</button>
+        <button class="btn" id="roundSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgComment">
+    <div class="modal">
+      <h2>Runden-Kommentar</h2>
+      <div class="form">
+        <label>Kommentar <input type="text" id="commentText" placeholder="kurze Notiz…" /></label>
+      </div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="commentCancel">Abbrechen</button>
+        <button class="btn" id="commentSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgProfileEdit">
+    <div class="modal">
+      <h2 id="dlgProfileTitle">Profil</h2>
+      <div class="form">
+        <label>Name <input type="text" id="profName" /></label>
+        <div id="profPwBlock">
+          <label id="lblProfPwCurrent" style="display:none">Aktuelles Passwort
+            <input type="password" id="profPwCurrent" placeholder="zur Bestätigung" />
+          </label>
+          <label>Neues Passwort (optional) <input type="password" id="profPwNew1" placeholder="mind. 4 Zeichen" /></label>
+          <label>Neues Passwort wiederholen <input type="password" id="profPwNew2" /></label>
+        </div>
+        <label>Avatar <input type="file" id="profAvatar" accept="image/*" /></label>
+        <div id="profAvatarPreview"></div>
+      </div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="profCancel">Abbrechen</button>
+        <button class="btn" id="profSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgTourSettings">
+    <div class="modal">
+      <h2>Turnier-Einstellungen</h2>
+      <div class="form">
+        <div class="grid2">
+          <label>Start-Chips pro Person <input type="number" id="setStartChips" min="1" step="1" /></label>
+          <label>Soll-Spielerzahl <input type="number" id="setPlayerCount" min="2" step="1" /></label>
+        </div>
+        <label>Admins (nur Teilnehmer)</label>
+        <div id="setAdmins" class="grid2"></div>
+      </div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="setCancel">Abbrechen</button>
+        <button class="btn" id="setSave">Speichern</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dlgAllTime">
+    <div class="modal">
+      <h2>All-Time – Auswahl</h2>
+      <div class="form">
+        <label>Spieler (ankreuzen)</label>
+        <div id="at_players" class="grid2"></div>
+        <div class="grid2">
+          <label>Sortierung
+            <select id="at_sort">
+              <option value="avgStack">Ø %Stack</option>
+              <option value="avgChips">Ø Chips</option>
+              <option value="euroBalance">€ Bilanz</option>
+              <option value="games">Spiele</option>
+            </select>
+          </label>
+          <label>Reihenfolge
+            <select id="at_dir">
+              <option value="desc">Absteigend</option>
+              <option value="asc">Aufsteigend</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+        <button class="btn secondary" id="atCancel">Abbrechen</button>
+        <button class="btn" id="atApply">Anzeigen</button>
+      </div>
+    </div>
+  </dialog>
+
   <footer>© Brenner</footer>
 
   <!-- Firebase -->
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
   <script>
     const firebaseConfig = {
       apiKey: "AIzaSyBDl3rpU3GjTb_c9rzzHQ04FCMAsBPVbYg",
