@@ -1,5 +1,5 @@
 /* ===========================================================
-   Poker-Stammtisch – Firebase Edition (vollständig)
+   Poker-Stammtisch – Firebase Edition (vollständig, Fixes)
    =========================================================== */
 
 /* ---------- DOM Shortcuts ---------- */
@@ -34,7 +34,7 @@ function genDefaultAvatar(name=""){
 }
 
 /* ---------- Global State ---------- */
-let roomId = "stammtisch";      // ?room=xyz ändert Raum
+let roomId = "stammtisch";
 let dbRef  = null;
 
 let state = {
@@ -65,7 +65,6 @@ function bindRealtime(){
     const v = snap.val();
     if(v){ state = migrate(normalize(v)); }
     else { state = migrate(normalize(state)); dbRef.set(state); }
-    // keine Header-Avatare im Auth-Screen erzwingen
     render("auth");
   });
 }
@@ -129,9 +128,14 @@ function show(view){
   $("view_tournament").classList.toggle("hidden", view!=="tournament");
   $("view_profile").classList.toggle("hidden", view!=="profile");
 
-  // Header-Avatar nur außerhalb von AUTH
-  if(view==="auth"){ $("btnHeaderProfile")?.classList.add("hidden"); }
-  else if(currentProfileId){ showHeaderAvatar(currentProfileId); }
+  // Header-Avatar nur zeigen, wenn eingeloggt
+  const btn=$("btnHeaderProfile"), img=$("headerAvatar");
+  if(view==="auth" || !currentProfileId){
+    btn?.classList.add("hidden");
+    if(img) img.src="";
+  }else{
+    showHeaderAvatar(currentProfileId);
+  }
 
   if(view==="auth") renderAuth();
   if(view==="home") renderHome();
@@ -159,6 +163,9 @@ $("linkRegister").addEventListener("click",(e)=>{ e.preventDefault(); openProfil
 $("linkOtherProfile").addEventListener("click",(e)=>{ e.preventDefault(); showLoginList(); });
 
 function renderAuth(){
+  // Header-Avatar im Auth-Screen immer versteckt
+  $("btnHeaderProfile")?.classList.add("hidden");
+
   // großer Kreis -> gemerktes Profilbild
   const remembered = localStorage.getItem("pst_lastProfile");
   const btn = $("btnLoginProfile");
@@ -210,7 +217,11 @@ function openProfileEdit(pid){
   $("profName").value = p.name||"";
   $("lblProfPwCurrent").style.display = (isEdit && p.pwHash)? "":"none";
   $("profPwCurrent").value=""; $("profPwNew1").value=""; $("profPwNew2").value="";
-  const prev=$("profAvatarPreview"); prev.innerHTML = `<span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span>`; prev.dataset.url="";
+
+  const prev=$("profAvatarPreview");
+  prev.innerHTML = `<span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span>`;
+  prev.dataset.url="";
+
   const file=$("profAvatar"); file.value="";
   file.onchange=()=>{
     const f=file.files[0]; if(!f) return;
@@ -225,22 +236,31 @@ function openProfileEdit(pid){
       }; img.src=r.result;
     }; r.readAsDataURL(f);
   };
+
   dlgProf.showModal();
   $("profCancel").onclick=()=> dlgProf.close();
   $("profSave").onclick=async ()=>{
     const name=$("profName").value.trim(); if(!name) return alert("Name fehlt");
     const cur=$("profPwCurrent").value; const n1=$("profPwNew1").value; const n2=$("profPwNew2").value;
     let newHash=p.pwHash||null;
+
     if(isEdit){
       if(n1||n2){
         if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein");
-        if(p.pwHash){ if(!cur) return alert("Aktuelles Passwort fehlt"); const h=await sha256Hex(cur); if(h!==p.pwHash) return alert("Aktuelles Passwort falsch"); }
+        if(p.pwHash){
+          if(!cur) return alert("Aktuelles Passwort fehlt");
+          const h=await sha256Hex(cur); if(h!==p.pwHash) return alert("Aktuelles Passwort falsch");
+        }
         if(n1 && n1.length<4) return alert("Neues Passwort zu kurz (≥4)");
         newHash=n1? await sha256Hex(n1): null;
       }
       p.name=name; p.pwHash=newHash; p.avatarDataUrl = prev.dataset.url || p.avatarDataUrl || genDefaultAvatar(name);
     }else{
-      if(n1||n2){ if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein"); if(n1.length<4) return alert("Neues Passwort zu kurz (≥4)"); newHash=await sha256Hex(n1); }
+      if(n1||n2){
+        if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein");
+        if(n1.length<4) return alert("Neues Passwort zu kurz (≥4)");
+        newHash=await sha256Hex(n1);
+      }
       const np={id:uid("p"), name, pwHash:newHash, avatarDataUrl: prev.dataset.url || genDefaultAvatar(name)};
       state.profiles.push(np); currentProfileId=np.id;
     }
@@ -250,6 +270,7 @@ function openProfileEdit(pid){
 $("btnLogout").addEventListener("click", ()=>{
   currentProfileId=null; curTournamentId=null;
   $("btnHeaderProfile").classList.add("hidden");
+  const img=$("headerAvatar"); if(img) img.src="";
   show("auth");
 });
 
@@ -365,11 +386,11 @@ function renderLeaderboard(t){
   order.forEach((pid,i)=>{
     const p=state.profiles.find(x=>x.id===pid);
     const card=document.createElement("div"); card.className="card"; card.style.cursor="pointer";
-    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":"";
+    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":""; const pct=clamp(avgPct[pid],0,100);
     card.innerHTML = `<h3>${medal? medal+" ":""}<img class="avatar mini" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"> ${p.name}</h3>
       <div class="sub">Ø Chips: <b>${Math.round(avgChips[pid])}</b> · Ø %Stack: <b>${avgPct[pid].toFixed(1)}</b>%</div>
-      <div class="bar gray"><span style="width:${clamp(avgPct[pid],0,100)}%"></span></div>`;
-    card.onclick=()=> openProfileView(pid, "tour"); // nur Turnier-Scope
+      <div class="bar gray"><span style="width:${pct}%"></span></div>`;
+    card.onclick=()=> openProfileView(pid, "tour");
     leader.appendChild(card);
   });
 }
@@ -383,7 +404,6 @@ function renderRounds(t){
   rounds.forEach(r=>{
     const sum=(t.players||[]).reduce((acc,pid)=> acc+(+r.chips?.[pid]||0),0);
     const isC=sum===targetTotal; const isUnder=sum<targetTotal;
-    // Einsatz-Runde golden (nutzt overshoot-Styling)
     const rowClass = (r.euroPerPersonCents!=null) ? "row overshoot" : (isC? "row": (isUnder? "row incomplete":"row overshoot"));
 
     const ranks = rankCompetition((t.players||[]).map(pid=> ({name:pid, value:+(r.chips?.[pid]||0)})));
@@ -438,7 +458,12 @@ function renderRounds(t){
   qsa("[data-cmt-id]").forEach(b=> b.addEventListener("click", ()=> openComment(t.id, b.getAttribute("data-cmt-id"))));
 }
 
-function rankCompetition(items){ const s=[...items].sort((a,b)=> b.value-a.value); let rank=0,seen=0,prev=Infinity; const map={}; for(const it of s){ seen++; if(it.value!==prev){ rank=seen; prev=it.value;} map[it.name]=rank; } return map; }
+function rankCompetition(items){
+  const s=[...items].sort((a,b)=> b.value-a.value);
+  let rank=0,seen=0,prev=Infinity; const map={};
+  for(const it of s){ seen++; if(it.value!==prev){ rank=seen; prev=it.value;} map[it.name]=rank; }
+  return map;
+}
 
 /* ---------- Runden CRUD ---------- */
 const dlgRound=$("dlgRound"), formRound=$("roundForm"), sumHint=$("sumHint");
@@ -465,28 +490,32 @@ function openRoundEdit(tid, rid){
   });
   formRound.appendChild(grid);
 
-  // Einsatz Umschalter + Feld
-  const stakeId = "r_stake";
-  const euroId  = "r_stake_euro";
-  const stakeWrap = document.createElement("div");
-  stakeWrap.innerHTML = `
-    <div class="grid2">
-      <label>Modus
-        <select id="${stakeId}">
-          <option value="none">Ohne Einsatz</option>
-          <option value="with">Mit Einsatz</option>
-        </select>
-      </label>
-      <label id="stakeEuroWrap" style="display:none">Einsatz pro Person (€)
-        <input type="text" id="${euroId}" placeholder="##,##" value="${r.euroPerPersonCents!=null? (r.euroPerPersonCents/100).toFixed(2).replace('.',','): ''}">
-      </label>
-    </div>`;
-  formRound.appendChild(stakeWrap);
+  // Modus + Einsatz + Dauer (einheitlich, blau)
+  const meta=document.createElement("div");
+  meta.className="grid2";
+  meta.innerHTML = `
+    <label>Modus
+      <select id="r_stake">
+        <option value="none">Ohne Einsatz</option>
+        <option value="with">Mit Einsatz</option>
+      </select>
+    </label>
+    <label id="stakeEuroWrap" style="display:none">Einsatz pro Person (€)
+      <input type="text" id="r_stake_euro" placeholder="##,##" value="${r.euroPerPersonCents!=null? (r.euroPerPersonCents/100).toFixed(2).replace('.',','): ''}">
+    </label>
+  `;
+  formRound.appendChild(meta);
 
-  // Dauer (blau akzentuiert) – Kommentar entfernt
-  $("r_duration").value = r.durationMin || 0;
+  const dur=document.createElement("div");
+  dur.className="grid2";
+  dur.innerHTML = `
+    <label>Dauer (Minuten)
+      <input type="number" id="r_duration" min="0" step="1" placeholder="z. B. 45" value="${r.durationMin||0}">
+    </label>
+  `;
+  formRound.appendChild(dur);
 
-  const stakeSel=$(stakeId), euroInp=$(euroId), stakeEuroWrap=$("stakeEuroWrap");
+  const stakeSel=$("r_stake"), euroInp=$("r_stake_euro"), stakeEuroWrap=$("stakeEuroWrap");
   stakeSel.value = (r.euroPerPersonCents!=null)? "with":"none";
   stakeEuroWrap.style.display = (stakeSel.value==="with")? "":"none";
   stakeSel.onchange = ()=> stakeEuroWrap.style.display = (stakeSel.value==="with")? "":"none";
@@ -502,18 +531,37 @@ function openRoundEdit(tid, rid){
 
   dlgRound.showModal();
   $("roundCancel").onclick=()=> dlgRound.close();
-  $("roundSave").onclick=()=>{
+
+  $("roundSave").onclick = () => {
     const date = $("r_date").value || todayIso();
-    const chips = {}; (t.players||[]).forEach(pid=> chips[pid]= +(formRound.querySelector(`[data-chip="${pid}"]`).value||0));
-    let euroPerPersonCents=null;
-    if(stakeSel.value==="with"){
-      let txt=(euroInp.value||"").replace(".",",");
-      if(txt.includes(",")){ const [a,b="0"]=txt.split(","); txt = `${a}.${b.padEnd(2,"0").slice(0,2)}`; }
-      const euro=parseFloat(txt)||0; euroPerPersonCents = Math.round(euro*100);
+
+    // Chips sauber einsammeln (wichtig: KEIN Zeilenumbruch in den Template-Strings)
+    const chips = {};
+    (t.players || []).forEach(pid => {
+      const el = formRound.querySelector(`[data-chip="${pid}"]`);
+      chips[pid] = +(el?.value || 0);
+    });
+
+    let euroPerPersonCents = null;
+    if (stakeSel.value === "with") {
+      let txt = (euroInp.value || "").replace(".", ",");
+      if (txt.includes(",")) {
+        const [a, b = "0"] = txt.split(",");
+        txt = `${a}.${b.padEnd(2, "0").slice(0, 2)}`;
+      }
+      const euro = parseFloat(txt) || 0;
+      euroPerPersonCents = Math.round(euro * 100);
     }
+
     const durationMin = Math.max(0, +$("r_duration").value || 0);
-    const obj = { id: rid||uid("r"), date, chips, comments:r.comments||[], euroPerPersonCents, durationMin, comment: r.comment||"" };
-    if(rid){ const i=t.rounds.findIndex(x=> x.id===rid); if(i>=0) t.rounds[i]=obj; } else t.rounds.push(obj);
+    const obj = { id: rid || uid("r"), date, chips, comments:r.comments||[], euroPerPersonCents, durationMin, comment: r.comment||"" };
+
+    if (rid) {
+      const i = t.rounds.findIndex(x => x.id === rid);
+      if (i >= 0) t.rounds[i] = obj;
+    } else {
+      t.rounds.push(obj);
+    }
     save(); dlgRound.close(); render("tournament");
   };
 }
@@ -563,10 +611,10 @@ function openTourSettings(){
 }
 
 /* ===========================================================
-   PROFIL-QUICK-VIEW (mit PDF)
+   PROFIL-QUICK-VIEW (Drucken statt PDF)
    =========================================================== */
 $("profBack").addEventListener("click", ()=> show("home"));
-$("profPdf").addEventListener("click", ()=> exportProfilePdf(currentProfileId, $("profScopeSel").value||"all"));
+$("profPrint").addEventListener("click", ()=> window.print());
 
 function openProfileView(pid, scopeDefault="all"){
   show("profile");
@@ -630,31 +678,8 @@ function renderProfile(pid, scope){
   });
 }
 
-/* ---------- PDF Quickview ---------- */
-$("profPdf")?.addEventListener("click", ()=> exportProfilePdf(currentProfileId, $("profScopeSel").value||"all"));
-async function exportProfilePdf(pid, scope){
-  await loadPdfLibs();
-  const p=state.profiles.find(x=>x.id===pid); if(!p) return;
-  const { jsPDF } = window.jspdf;
-  const doc=new jsPDF("p","mm","a4");
-  const pageW=doc.internal.pageSize.getWidth(), pageH=doc.internal.pageSize.getHeight(), margin=12;
-  doc.setFont("helvetica","bold"); doc.setFontSize(16); doc.text(`Profil-Quickview – ${p.name}`, margin, 18);
-  doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(80);
-  doc.text(`Stand: ${fmtDate(todayIso())} · Scope: ${scope==="all"?"alle Turniere": (scope==="tour"?"dieses Turnier":"ausgewählt")}`, margin, 24);
-  let y=30;
-  const kpiCard=qs("#view_profile .card:nth-of-type(1)"); if(kpiCard){ const c=await html2canvas(kpiCard,{backgroundColor:"#fff",scale:2}); const i=c.toDataURL("image/jpeg",0.92); const w=pageW-margin*2; const h=w/(c.width/c.height); if(y+h>pageH-margin){doc.addPage(); y=margin;} doc.addImage(i,"JPEG",margin,y,w,h,"","FAST"); y+=h+8; }
-  const tableCard=qs("#view_profile .card:last-of-type"); if(tableCard){ const c=await html2canvas(tableCard,{backgroundColor:"#fff",scale:2}); const i=c.toDataURL("image/jpeg",0.92); const w=pageW-margin*2; const h=w/(c.width/c.height); if(y+h>pageH-margin){doc.addPage(); y=margin;} doc.addImage(i,"JPEG",margin,y,w,h,"","FAST"); y+=h+10; }
-  doc.setDrawColor(200); doc.line(margin, pageH - margin - 18, pageW - margin, pageH - margin - 18);
-  doc.setFontSize(9); doc.setTextColor(120); doc.text("© Brenner · Poker-Stammtisch", margin, pageH - margin);
-  doc.save(`poker_${p.name}_quickview_${todayIso()}.pdf`);
-}
-async function loadPdfLibs(){
-  if(!window.html2canvas){ await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.3/dist/html2canvas.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
-  if(!window.jspdf){ await new Promise((res,rej)=>{ const s=document.createElement("script"); s.src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"; s.onload=res; s.onerror=rej; document.head.appendChild(s); }); }
-}
-
 /* ===========================================================
-   ALL-TIME Bester – Dialog + Ergebnis-Dialog + PDF
+   ALL-TIME Bester – Dialog + Ergebnis-Dialog (Drucken)
    =========================================================== */
 function openAllTime(){
   const box = $("at_players"); box.innerHTML="";
@@ -674,7 +699,6 @@ function openAllTime(){
     const sortBy=$("at_sort").value;
     const dir=$("at_dir").value;
 
-    // Stats berechnen
     const players = state.profiles.filter(p=> selIds.includes(p.id));
     const stats = players.map(p=>{
       let games=0,sumChips=0,sumPct=0,euro=0;
@@ -707,9 +731,7 @@ function openAllTime(){
       return (dir==="asc"? (x>y?1:-1) : (x<y?1:-1));
     });
 
-    // Ergebnis-Dialog füllen
     $("at_header").textContent = `Sortiert nach: ${$("at_sort").selectedOptions[0].text} (${dir==="asc"?"aufsteigend":"absteigend"})`;
-    // Tabelle mit fester Spaltenbreite
     $("at_rows").innerHTML = stats.map(s=> `<tr>
       <td class="al-left">${s.name}</td>
       <td class="al-right">${s.games}</td>
@@ -720,32 +742,11 @@ function openAllTime(){
 
     dlg.close();
     $("dlgAllTimeResult").showModal();
+
+    $("atResClose").onclick = ()=> $("dlgAllTimeResult").close();
+    $("atResPrint").onclick = ()=> window.print();
   };
 }
-
-// Ergebnis-Dialog Buttons
-$("atResClose").addEventListener("click", ()=> $("dlgAllTimeResult").close());
-$("atResBack").addEventListener("click", ()=> { $("dlgAllTimeResult").close(); show("home"); });
-$("atResPdf").addEventListener("click", async ()=>{
-  await loadPdfLibs();
-  const { jsPDF } = window.jspdf;
-  const doc=new jsPDF("p","mm","a4"), margin=12;
-  const pageW=doc.internal.pageSize.getWidth(), pageH=doc.internal.pageSize.getHeight();
-  doc.setFont("helvetica","bold"); doc.setFontSize(16); doc.text("All-Time – Ergebnis", margin, 18);
-  doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(80); doc.text(`Stand: ${fmtDate(todayIso())}`, margin, 24);
-  let y=30;
-  const card=qs("#at_result_card");
-  if(card){
-    const canvas=await html2canvas(card,{backgroundColor:"#fff",scale:2});
-    const img=canvas.toDataURL("image/jpeg",0.92);
-    const w=pageW-margin*2, h=w/(canvas.width/canvas.height);
-    if(y+h>pageH-margin){ doc.addPage(); y=margin; }
-    doc.addImage(img,"JPEG",margin,y,w,h,"","FAST");
-  }
-  doc.setDrawColor(200); doc.line(margin, pageH - margin - 18, pageW - margin, pageH - margin - 18);
-  doc.setFontSize(9); doc.setTextColor(120); doc.text("© Brenner · Poker-Stammtisch", margin, pageH - margin);
-  doc.save(`poker_alltime_${todayIso()}.pdf`);
-});
 
 /* ===========================================================
    START
