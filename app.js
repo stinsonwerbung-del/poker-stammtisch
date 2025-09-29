@@ -1,561 +1,1039 @@
-// ===== Dialog-Fallbacks
-function dlgOpen(d){ try{ if(d && d.showModal) d.showModal(); else d.style.display='block'; }catch{ d.style.display='block'; } }
-function dlgClose(d){ try{ if(d && d.close) d.close(); else d.style.display='none'; }catch{ d.style.display='none'; } }
+/* ===========================================================
+   Poker-Stammtisch – Firebase App (v10)
+   - Realtime DB Sync
+   - Profile / Turniere / Runden inkl. Einsatz
+   - Quick-View + PDF (A4, farbige Medaillen/Avatare/🔥, Rest grau)
+   - All-Time-Bestenliste (Filter + Zeitraum)
+   - Admins nur Spieler des Turniers
+   - "0"-Platzhalter-Handling, kein störender Focus auf Mobile
+   - "Zuletzt genutztes Profil" merken (pro Gerät)
+   - Migration alter Daten
+   =========================================================== */
 
-// ===== URL-Parameter
-const QS = new URLSearchParams(location.search);
-const ROOM_ID = QS.get('room') || 'stammtisch';
-const VIEW_ONLY = QS.get('viewer') === '1';
+(() => {
+  "use strict";
 
-// ===== Konstanten & Utils
-const DEC=2; const STORAGE_KEY='pst_fb_v1';
-const DEFAULT_AVATAR = (()=>{ const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'>
-  <rect width='256' height='256' fill='#0f1221'/><g transform='translate(128,128)'>
-  <circle r='86' fill='#e43d30'/><circle r='68' fill='#ffffff'/><circle r='54' fill='#e43d30'/><circle r='24' fill='#ffffff'/></g></svg>`;
-  return 'data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svg)));
-})();
-const fmtPct = v=> (v??0).toFixed(DEC).replace('.',',');
-const fmtDate = iso=>{ if(!iso) return '—'; const [y,m,d]=iso.split('-'); return `${d}.${m}.${y}`; };
-const clamp = (n,min,max)=> Math.max(min, Math.min(max,n));
-const uid = p=> `${p}_${Date.now()}_${Math.floor(Math.random()*1e6)}`;
-async function sha256Hex(str){
-  if(window.crypto?.subtle){ const buf=await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)); return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join(''); }
-  let h=0; for(let i=0;i<str.length;i++){ h=((h<<5)-h)+str.charCodeAt(i); h|=0; } return ('00000000'+(h>>>0).toString(16)).slice(-8);
-}
-function dayIdx(iso){ return new Date(iso+"T00:00:00").getDay(); } // 0 So .. 6 Sa
-
-// ===== State
-let state = loadLocal();
-let currentProfileId=null;
-let curTournamentId=null;
-
-// Globale Streak-Pause pro Wochentag (0=So .. 6=Sa) – true = pausiert
-if(!state.streakWeekPause) state.streakWeekPause = {0:true,6:true};
-
-// ===== Firebase
-const USE_FIREBASE = typeof firebase !== 'undefined';
-let db = null, refState = null;
-let cloudSaveTimer = null;
-
-// ===== Local Cache
-function loadLocal(){
-  try{
-    const raw=localStorage.getItem(STORAGE_KEY);
-    if(!raw) return {version:9, profiles:[], tournaments:[], streakWeekPause:{0:true,6:true}};
-    return migrate(normalize(JSON.parse(raw)));
-  }catch{ return {version:9, profiles:[], tournaments:[], streakWeekPause:{0:true,6:true}}; }
-}
-function saveLocal(){
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-}
-
-// ===== Normalisieren/Migration
-function normalize(obj){
-  if (!obj || typeof obj!=='object'){ return {version:9, profiles:[], tournaments:[], streakWeekPause:{0:true,6:true}}; }
-  return {
-    version: obj.version||9,
-    streakWeekPause: obj.streakWeekPause || {0:true,6:true},
-    profiles: Array.isArray(obj.profiles)? obj.profiles: [],
-    tournaments: Array.isArray(obj.tournaments)? obj.tournaments: []
+  // ---------- Hilfen ----------
+  const $ = (id) => document.getElementById(id);
+  const qs = (sel, root = document) => root.querySelector(sel);
+  const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const DEC = 2;
+  const fmtPct = (v) => (v ?? 0).toFixed(2).replace('.', ',');
+  const fmtMoney = (cents) => {
+    const s = Math.round(cents || 0);
+    const sign = s < 0 ? "-" : "";
+    const abs = Math.abs(s);
+    const euros = Math.floor(abs / 100);
+    const cents2 = String(abs % 100).padStart(2, "0");
+    return `${sign}${euros},${cents2}€`;
   };
-}
-function migrate(d){
-  d.version = 9;
-  d.profiles.forEach(p=>{ p.id=p.id||uid('p'); if(!p.avatarDataUrl) p.avatarDataUrl=DEFAULT_AVATAR; });
-  d.tournaments.forEach(t=>{
-    t.id=t.id||uid('t');
-    t.rounds=(t.rounds||[]).map(r=> ({...r, id:r.id||uid('r'), comments:r.comments||[], streakPause:Array.isArray(r.streakPause)? r.streakPause: []}));
-    if(!Array.isArray(t.admins)) t.admins=[];
-    if(!t.startChips) t.startChips=640;
-    if(!t.playerCount) t.playerCount=(t.players?.length)||4;
-  });
-  return d;
-}
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    const [y, m, d] = iso.split("-");
+    return `${d}.${m}.${y}`;
+  };
+  const todayIso = () => new Date().toISOString().slice(0, 10);
+  const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+  const uid = (p) => `${p}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
 
-// ===== Streaks
-let streakCache = { byPid:new Map(), valid:false, key:'' };
-function stateKeyForStreaks(){
-  const rounds = state.tournaments
-    .flatMap(t => (t.rounds||[]).map(r => ({ d:r.date, c:r.chips, sp:r.streakPause })))
-    .sort((a,b)=> (a.d||'').localeCompare(b.d||''));
-  return JSON.stringify({week:state.streakWeekPause||{}, rounds});
-}
-function rebuildStreaks(){
-  const key = stateKeyForStreaks();
-  if(streakCache.valid && streakCache.key===key) return;
+  // ---------- Firebase Room ----------
+  const urlParams = new URLSearchParams(location.search);
+  const ROOM = urlParams.get("room") || "stammtisch"; // euer Standardraum
+  const VIEWER = urlParams.get("viewer") === "1";     // nur ansehen-Modus
 
-  const dateMap = new Map();
-  state.tournaments.forEach(t=>{
-    (t.rounds||[]).forEach(r=>{
-      const iso=r.date; if(!iso) return;
-      let entry=dateMap.get(iso); if(!entry){ entry={any:false, players:new Set()}; dateMap.set(iso,entry); }
-      entry.any=true;
-      (t.players||[]).forEach(pid=>{
-        const paused = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
-        const val = +r.chips?.[pid]||0;
-        if(val>0 && !paused) entry.players.add(pid);
-      });
+  // ---------- State ----------
+  let state = null;
+  let currentProfileId = null;
+  let currentTournamentId = null;
+  let dbRef = null;
+
+  // ---------- Assets / Default Avatar ----------
+  const DEFAULT_AVATAR = (() => {
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256' viewBox='0 0 256 256'>
+    <rect width='256' height='256' fill='#0f1221'/>
+    <g transform='translate(128,128)'>
+      <circle r='86' fill='#e43d30'/><circle r='68' fill='#ffffff'/>
+      <circle r='54' fill='#e43d30'/><circle r='24' fill='#ffffff'/>
+    </g></svg>`;
+    return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
+  })();
+
+  // ---------- Script Loader (for PDF) ----------
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const s = document.createElement("script");
+      s.src = src; s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
     });
-  });
-
-  const allDates=[...dateMap.keys()].sort();
-  const startIso = allDates[0] || new Date().toISOString().slice(0,10);
-  const todayIso = new Date().toISOString().slice(0,10);
-  const allPids = state.profiles.map(p=>p.id);
-  const cur=new Map(), best=new Map(); allPids.forEach(pid=>{ cur.set(pid,0); best.set(pid,0); });
-
-  for(let d=startIso;;){
-    const activeDay = !state.streakWeekPause?.[dayIdx(d)];
-    const entry = dateMap.get(d); const any=!!entry?.any;
-    if(activeDay){
-      allPids.forEach(pid=>{
-        const me = !!entry?.players?.has(pid);
-        if(any){ if(me){ const nv=(cur.get(pid)||0)+1; cur.set(pid,nv); if(nv>(best.get(pid)||0)) best.set(pid,nv); } else cur.set(pid,0); }
-        else cur.set(pid,0);
-      });
+  }
+  async function ensurePdfLibs() {
+    if (!window.html2canvas) {
+      await loadScript("https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js");
     }
-    if(d===todayIso) break;
-    d = new Date(new Date(d+"T00:00:00").getTime()+86400000).toISOString().slice(0,10);
+    if (!window.jspdf) {
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+    }
   }
 
-  streakCache={ byPid:new Map(allPids.map(pid=>[pid,{current:cur.get(pid)||0,best:best.get(pid)||0}])), valid:true, key };
-}
-function computeStreaks(pid){ rebuildStreaks(); return streakCache.byPid.get(pid)||{current:0,best:0}; }
-
-// ===== DOM Refs & Views
-const authSec=document.getElementById('view_auth');
-const homeSec=document.getElementById('view_home');
-const tourSec=document.getElementById('view_tournament');
-const profSec=document.getElementById('view_profile');
-
-function show(view){
-  authSec.classList.toggle('hidden', view!=='auth');
-  homeSec.classList.toggle('hidden', view!=='home');
-  tourSec.classList.toggle('hidden', view!=='tournament');
-  profSec.classList.toggle('hidden', view!=='profile');
-  render(view);
-}
-
-// ===== Helpers
-function getProfile(pid){ return state.profiles.find(p=> p.id===pid); }
-function avatarImg(profile, size='avatar', withBadge=true, overrideBadge=null){
-  const cls = size==='mini' ? 'avatar mini' : size==='mid' ? 'avatar mid' : size==='big' ? 'avatar big' : 'avatar';
-  const src = profile?.avatarDataUrl || DEFAULT_AVATAR;
-  const name = profile?.name || '';
-  let badge=''; if(withBadge && profile?.id){ const st=(overrideBadge!=null)? overrideBadge : computeStreaks(profile.id).current; if(st>=1) badge=`<span class="streakBadge">🔥 <b>${st}</b></span>`; }
-  return `<span class="avatarWrap"><img class="${cls}" src="${src}" alt="${name}">${badge}</span>`;
-}
-function rankCompetition(items){ const s=[...items].sort((a,b)=> b.value-a.value); let rank=0,seen=0,prev=Infinity; const map={}; for(const it of s){ seen++; if(it.value!==prev){ rank=seen; prev=it.value;} map[it.name]=rank; } return map; }
-function computeTournamentStats(t){
-  const totals={}, counts={}; (t.players||[]).forEach(pid=>{ totals[pid]=0; counts[pid]=0; });
-  const asc=[...t.rounds].sort((a,b)=> (a.date||'').localeCompare(b.date||''));
-  asc.forEach(r=>{ const sum=(t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0);
-    (t.players||[]).forEach(pid=>{ totals[pid]+= (+r.chips?.[pid]||0); counts[pid]+=1; });
-  });
-  const avgPct={}, avgChips={}; (t.players||[]).forEach(pid=>{ avgChips[pid]= counts[pid]? totals[pid]/counts[pid]:0; avgPct[pid]= (t.playerCount*t.startChips)? (avgChips[pid]/(t.playerCount*t.startChips)*100):0; });
-  const overallRank = rankCompetition((t.players||[]).map(pid=> ({name:pid, value:avgPct[pid]})));
-  return { players: (t.players||[]).map(pid=> ({ id:pid, name:getProfile(pid)?.name||'?', avgPct:avgPct[pid], avgChips:avgChips[pid], rank:overallRank[pid] })) };
-}
-function computeTournamentInfo(t){
-  if(!t || !Array.isArray(t.rounds) || t.rounds.length===0){ return { last:null, hasIncomplete:false, hasOvershoot:false, total:(t?t.playerCount*t.startChips:2560) }; }
-  const sorted=[...t.rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||'')); const last=sorted[0];
-  const sum=(t.players||[]).reduce((a,p)=> a+(+last.chips?.[p]||0),0);
-  const total=t.playerCount*t.startChips;
-  const hasIncomplete = t.rounds.some(r=> (t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0) < total);
-  const hasOvershoot =  t.rounds.some(r=> (t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0) > total);
-  return { last:{sum,total}, hasIncomplete, hasOvershoot, total };
-}
-
-// ===== Render switch
-function render(activeView){
-  // open/save Buttons ausblenden (Firebase)
-  document.getElementById('openBtn')?.classList.add('hidden');
-  document.getElementById('saveBtn')?.classList.add('hidden');
-
-  if(activeView==='tournament' && curTournamentId){
-    const t=state.tournaments.find(x=> x.id===curTournamentId);
-    const info=computeTournamentInfo(t);
-    const ss=document.getElementById('sumState');
-    if(info.last){ const {sum,total}=info.last; const isC=sum===total;
-      ss.textContent = isC? `Letzte Runde: ${sum} / ${total}` : `Letzte Runde: ${sum} / ${total} · ${sum<total? 'unvollständige Zählung (gezählt)':'überschüssige Zählung (gezählt)'}`;
-      ss.className='pill '+(isC?'good': (sum<total?'warn':'bad'));
-    } else { ss.textContent='Letzte Runde: —'; ss.className='pill'; }
-    document.getElementById('flagIncomplete').style.display = info.hasIncomplete? '': 'none';
-    document.getElementById('flagOvershoot').style.display  = info.hasOvershoot?  '': 'none';
+  // ---------- Migration ----------
+  function normalize(raw) {
+    // Akzeptiere entweder Objekt oder Legacy-Array (alte lokale JSON)
+    if (Array.isArray(raw)) {
+      const profiles = [
+        { id: 'p1', name: 'Lorenzo' },
+        { id: 'p2', name: 'Jacki' },
+        { id: 'p3', name: 'Arnold' },
+        { id: 'p4', name: 'Jonny' }
+      ];
+      const tid = 't1';
+      const rounds = (raw || []).map(r => ({
+        id: uid('r'),
+        date: r.date || r.datum || todayIso(),
+        chips: r.chips || {},
+        complete: r.complete ?? true,
+        comments: []
+      }));
+      return {
+        version: 10,
+        profiles,
+        tournaments: [{
+          id: tid, name: 'Stammtisch',
+          startDate: rounds[0]?.date || todayIso(),
+          players: profiles.map(p => p.id),
+          startChips: 640,
+          playerCount: 4,
+          admins: [],
+          rounds
+        }]
+      };
+    }
+    return raw || {};
   }
 
-  if(!homeSec.classList.contains('hidden')){
-    const who=state.profiles.find(p=> p.id===currentProfileId);
-    document.getElementById('whoPill').innerHTML = who? `Eingeloggt als: <b>${who.name}</b>` : 'Eingeloggt als: —';
-    const my=document.getElementById('myTournamentList'); const other=document.getElementById('otherTournamentList'); my.innerHTML=''; other.innerHTML='';
-    const list=[...state.tournaments].sort((a,b)=> (b.startDate||'').localeCompare(a.startDate||''));
-    list.forEach(t=>{
-      const players=t.players||[]; const inTour=players.includes(currentProfileId);
-      const wrap=document.createElement('div'); wrap.className='sub';
-      const names=players.map(pid=> state.profiles.find(p=> p.id===pid)?.name||'?').join(', ');
-      const total=t.playerCount*t.startChips;
-      wrap.innerHTML = `<a href="#" data-open="${t.id}"><b>${t.name}</b></a> · Start: ${fmtDate(t.startDate)} · Spieler: ${names} · Soll: ${total}`;
-      wrap.querySelector('a').addEventListener('click', e=>{ e.preventDefault(); openTournament(t.id); });
-      (inTour? my: other).appendChild(wrap);
-    });
-  }
+  function migrate(d) {
+    const out = { version: 10, profiles: [], tournaments: [], ...d };
 
-  if(!tourSec.classList.contains('hidden') && curTournamentId){
-    renderTournament(curTournamentId);
-  }
-}
-
-// ===== Views öffnen
-function openTournament(id){ curTournamentId=id; show('tournament'); }
-function openProfileView(pid){
-  const p=getProfile(pid); if(!p) return alert('Profil fehlt');
-  show('profile');
-  document.getElementById('profTitle').innerHTML = `${avatarImg(p,'mid',true)} ${p.name}`;
-  const sel=document.getElementById('profScopeSel');
-  sel.innerHTML = '<option value="all">Gesamt (alle Turniere)</option>' + state.tournaments.map(t=> `<option value="${t.id}">${t.name}</option>`).join('');
-  document.getElementById('profBack').onclick=()=> show('tournament');
-  document.getElementById('profPrint').onclick=()=> window.print();
-
-  const renderProf=()=>{
-    const pid = p.id;
-    const scope=sel.value;
-    const rounds = state.tournaments.flatMap(t=> (scope==='all'||scope===t.id)? t.rounds.map(r=> ({t,r})) : [] ).filter(x=> (x.t.players||[]).includes(pid));
-    const sorted=[...rounds].sort((a,b)=> (b.r.date||'').localeCompare(a.r.date||''));
-    const rows=sorted.map(({t,r})=>{
-      const sum=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
-      const pct=sum? ((+r.chips?.[pid]||0)/sum*100):0;
-      const ranks=rankCompetition((t.players||[]).map(pp=> ({name:pp, value:+(r.chips?.[pp]||0)})));
-      return {date:r.date, tour:t.name, chips:+r.chips?.[pid]||0, pct, rank:ranks[pid]||4, status: sum===(t.playerCount*t.startChips)?'OK': (sum<(t.playerCount*t.startChips)?'Unvollständig':'Überschüssig')};
-    });
-    const n=rows.length; const avgChips=n? rows.reduce((a,b)=> a+b.chips,0)/n:0; const avgPct=n? rows.reduce((a,b)=> a+b.pct,0)/n:0;
-    const dist=[1,2,3,4].map(k=> rows.filter(x=> x.rank===k).length); const ser=[...rows].reverse().map(x=> x.pct);
-    const {current:stCur, best:stBest} = computeStreaks(pid);
-    document.getElementById('profSub').textContent =
-      `Runden: ${n} · Ø Chips: ${Math.round(avgChips)} · Ø %Stack: ${fmtPct(avgPct)}% · Verteilung: 🥇 ${dist[0]} · 🥈 ${dist[1]} · 🥉 ${dist[2]} · 🗑️ ${dist[3]} · Streak: 🔥 ${stCur} (Best: ${stBest})`;
-    const pv=document.getElementById('pv_spark'); pv.innerHTML = ser.map(pv=> `<span title='${fmtPct(pv)}%' style='flex:1;background:linear-gradient(180deg,#6ee7ff,#8b5cff);align-self:flex-end;height:${Math.max(4,Math.min(100,Math.round(pv)))}%'></span>`).join('');
-    const tbody=document.getElementById('profRows'); tbody.innerHTML = rows.map(r=> `<tr><td>${fmtDate(r.date)}</td><td>${r.tour}</td><td>#${r.rank}</td><td>${r.chips}</td><td>${fmtPct(r.pct)}%</td><td>${r.status}</td></tr>`).join('');
-  };
-  sel.onchange=renderProf; renderProf();
-}
-
-// ===== AUTH
-document.getElementById('btnLoginProfile').addEventListener('click', showLoginList);
-document.getElementById('linkRegister').addEventListener('click', (e)=>{ e.preventDefault(); openProfileEdit(null); });
-
-function showLoginList(){
-  const grid=document.getElementById('authList'); grid.innerHTML='';
-  state.profiles.forEach(p=>{
-    const card=document.createElement('div'); card.className='card';
-    const st=computeStreaks(p.id);
-    card.innerHTML=`<div style="display:flex;align-items:center;gap:10px">
-      ${avatarImg(p,'mid',true,st.current)}
-      <div><b>${p.name}</b><div class="sub">${p.pwHash? 'Passwortgeschützt':'kein Passwort'}</div></div>
-      <div style="margin-left:auto"><button class='btn small' data-login='${p.id}'>Einloggen</button></div></div>`;
-    grid.appendChild(card);
-  });
-  grid.style.display='grid';
-  grid.querySelectorAll('[data-login]').forEach(b=> b.addEventListener('click', async ()=>{
-    const pid=b.getAttribute('data-login'); const prof=getProfile(pid);
-    if(prof.pwHash){ const pw=prompt('Passwort für '+prof.name+':'); if(!pw) return; const h=await sha256Hex(pw); if(h!==prof.pwHash) return alert('Falsches Passwort'); }
-    currentProfileId=pid; show('home');
-  }));
-}
-document.getElementById('btnEditSelf').addEventListener('click', ()=> openProfileEdit(currentProfileId));
-document.getElementById('btnLogout').addEventListener('click', ()=>{ currentProfileId=null; curTournamentId=null; show('auth'); });
-
-// ===== Profile edit/create (Dialog wie vorher: Name, PW, PW-Repeat, Avatar)
-const dlgProf=document.getElementById('dlgProfileEdit');
-function openProfileEdit(pid){
-  const p = pid? getProfile(pid) : {name:'', pwHash:null, avatarDataUrl:DEFAULT_AVATAR};
-  const isEdit=!!pid;
-  document.getElementById('dlgProfileTitle').textContent = isEdit? 'Profil bearbeiten':'Profil anlegen';
-  document.getElementById('profName').value = p.name||'';
-  document.getElementById('lblProfPwCurrent').style.display = (isEdit && p.pwHash)? '' : 'none';
-  document.getElementById('profPwCurrent').value=''; document.getElementById('profPwNew1').value=''; document.getElementById('profPwNew2').value='';
-  const prev=document.getElementById('profAvatarPreview'); prev.innerHTML = `<span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl||DEFAULT_AVATAR}"></span>`; prev.dataset.url='';
-  const file=document.getElementById('profAvatar'); file.value='';
-  file.onchange=()=>{ const f=file.files[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ const img=new Image(); img.onload=()=>{ const c=document.createElement('canvas'); const s=256; c.width=s; c.height=s; const ctx=c.getContext('2d'); const min=Math.min(img.width,img.height); const sx=(img.width-min)/2; const sy=(img.height-min)/2; ctx.drawImage(img,sx,sy,min,min,0,0,s,s); const url=c.toDataURL('image/webp',0.8); prev.innerHTML=`<span class="avatarWrap"><img class="avatar big" src="${url}"></span>`; prev.dataset.url=url; }; img.src=r.result; }; r.readAsDataURL(f); };
-  dlgOpen(dlgProf);
-  document.getElementById('profCancel').onclick=()=> dlgClose(dlgProf);
-  document.getElementById('profSave').onclick=async()=>{
-    const name=document.getElementById('profName').value.trim(); if(!name) return alert('Name fehlt');
-    const cur=document.getElementById('profPwCurrent').value;
-    const n1=document.getElementById('profPwNew1').value; const n2=document.getElementById('profPwNew2').value;
-    let newHash=p.pwHash||null;
-    if(isEdit){
-      if(n1||n2){
-        if(n1!==n2) return alert('Neue Passwörter stimmen nicht überein');
-        if(p.pwHash){ if(!cur) return alert('Aktuelles Passwort fehlt'); const h=await sha256Hex(cur); if(h!==p.pwHash) return alert('Aktuelles Passwort falsch'); }
-        if(n1 && n1.length<4) return alert('Neues Passwort zu kurz (≥4)');
-        newHash=n1? await sha256Hex(n1): null;
-      }
-      p.name=name; p.pwHash=newHash; p.avatarDataUrl= prev.dataset.url || p.avatarDataUrl || DEFAULT_AVATAR;
+    // Profile auf Objekt- oder Array-Form abbilden
+    if (Array.isArray(out.profiles)) {
+      out.profiles.forEach(p => {
+        p.id = p.id || uid('p');
+        p.avatarDataUrl = p.avatarDataUrl || DEFAULT_AVATAR;
+        p.streakWeek = p.streakWeek || { 0: false, 1: true, 2: true, 3: true, 4: true, 5: false, 6: false }; // Mo-Fr aktiv
+      });
+    } else if (out.profiles && typeof out.profiles === 'object') {
+      // nichts
     } else {
-      if(n1||n2){ if(n1!==n2) return alert('Neue Passwörter stimmen nicht überein'); if(n1.length<4) return alert('Neues Passwort zu kurz (≥4)'); newHash=await sha256Hex(n1); }
-      const np={id:uid('p'), name, pwHash:newHash, avatarDataUrl: prev.dataset.url || DEFAULT_AVATAR};
-      state.profiles.push(np); currentProfileId=np.id;
+      out.profiles = [];
     }
-    save(); dlgClose(dlgProf); show('home'); alert('Profil gespeichert.');
-  };
-}
 
-// ===== Tournament flow (Dialog wie vorher)
-document.getElementById('btnBackHome').addEventListener('click', ()=> show('home'));
-document.getElementById('btnNewTournament').addEventListener('click', ()=> openTournamentDialog());
-function isTournamentAdmin(t){ return !!(t.admins||[]).includes(currentProfileId); }
+    // Turniere
+    out.tournaments = Array.isArray(out.tournaments) ? out.tournaments : [];
+    out.tournaments.forEach(t => {
+      t.id = t.id || uid('t');
+      t.name = t.name || "Turnier";
+      t.startDate = t.startDate || todayIso();
+      t.players = Array.isArray(t.players) ? t.players : [];
+      t.startChips = t.startChips || 640;
+      t.playerCount = t.playerCount || (t.players?.length || 4);
+      t.admins = Array.isArray(t.admins) ? t.admins : [];
+      t.rounds = Array.isArray(t.rounds) ? t.rounds : [];
+      t.rounds = t.rounds.map(r => ({
+        id: r.id || uid('r'),
+        date: r.date || todayIso(),
+        chips: r.chips || {},
+        complete: !!r.complete,
+        comments: Array.isArray(r.comments) ? r.comments : [],
+        stakeMode: r.stakeMode === 'stake' ? 'stake' : 'none',
+        stakePerPersonCents: Number.isFinite(r.stakePerPersonCents) ? r.stakePerPersonCents : 0
+      }));
+    });
 
-function openTournamentDialog(){
-  if(!currentProfileId){ alert('Bitte zuerst einloggen.'); return; }
-  const dlg=document.getElementById('dlgTournament');
-  const list=document.getElementById('tourPlayers'); list.innerHTML='';
-  state.profiles.forEach(p=>{ const wrap=document.createElement('label'); wrap.style.display='flex'; wrap.style.gap='8px'; wrap.style.alignItems='center'; wrap.innerHTML=`<input type="checkbox" value="${p.id}" ${p.id===currentProfileId?'checked':''}> ${p.name}`; list.appendChild(wrap); });
-  document.getElementById('tourName').value='';
-  document.getElementById('tourDate').value=new Date().toISOString().slice(0,10);
-  document.getElementById('tourStartChips').value=640; document.getElementById('tourPlayerCount').value=4;
-  dlgOpen(dlg);
-  document.getElementById('tourCancel').onclick=()=> dlgClose(dlg);
-  document.getElementById('tourCreate').onclick=()=>{
-    const name=document.getElementById('tourName').value.trim(); if(!name) return alert('Name fehlt');
-    const date=document.getElementById('tourDate').value||new Date().toISOString().slice(0,10);
-    const startChips= Math.max(1, +document.getElementById('tourStartChips').value||640);
-    const playerCount= Math.max(2, +document.getElementById('tourPlayerCount').value||4);
-    const players=[...list.querySelectorAll('input:checked')].map(i=> i.value);
-    if(players.length<2) return alert('Mind. 2 Spieler');
-    const t={ id:uid('t'), name, startDate:date, players, startChips, playerCount, admins:[currentProfileId], rounds:[] };
-    state.tournaments.push(t); save(); dlgClose(dlg); openTournament(t.id);
-  };
-}
+    // Profile in Objekt-Map umwandeln (für schnelleren Zugriff)
+    if (Array.isArray(out.profiles)) {
+      const map = {};
+      out.profiles.forEach(p => map[p.id] = p);
+      out.profiles = map;
+    } else {
+      // sicherstellen dass Pflichtfelder gesetzt sind
+      Object.values(out.profiles).forEach(p => {
+        p.id = p.id || uid('p');
+        p.avatarDataUrl = p.avatarDataUrl || DEFAULT_AVATAR;
+        p.streakWeek = p.streakWeek || { 0: false, 1: true, 2: true, 3: true, 4: true, 5: false, 6: false };
+      });
+    }
 
-function renderTournament(tid){
-  const t=state.tournaments.find(x=> x.id===tid); if(!t) return;
-  document.getElementById('dashTitle').textContent = t.name;
-  document.getElementById('dashSub').textContent = `Start: ${fmtDate(t.startDate)} · Spieler: ${(t.players||[]).map(pid=> getProfile(pid)?.name||'?').join(', ')} · Soll: ${t.playerCount*t.startChips}`;
-  document.getElementById('addRoundBtn').style.display = isTournamentAdmin(t) && !VIEW_ONLY ? '' : 'none';
+    return out;
+  }
 
-  const stats = computeTournamentStats(t);
-  const leader=document.getElementById('leaderGrid'); leader.innerHTML='';
-  stats.players.sort((a,b)=> a.rank-b.rank).forEach(c=>{
-    const medal = c.rank===1? '🥇': c.rank===2? '🥈': c.rank===3? '🥉': '';
-    const prof = getProfile(c.id);
-    const stVals = computeStreaks(c.id);
-    const card=document.createElement('div'); card.className='card';
-    card.innerHTML = `<h3 title="Beste Serie: ${stVals.best}">${medal? medal+' ':''}${avatarImg(prof,'mini',true,stVals.current)} ${c.name}</h3>
-      <div class="sub">Ø Chips: <b>${Math.round(c.avgChips)}</b> · Ø %Stack: <b>${fmtPct(c.avgPct)}</b>%</div>
-      <div class="rankRow"><div>Platz <b>${c.rank}</b></div><div class="sub">Best 🔥 ${stVals.best}</div></div>
-      <div class="bar"><span style="width:${clamp(c.avgPct,0,100)}%"></span></div>`;
-    card.style.cursor='pointer'; card.addEventListener('click', ()=> openProfileView(c.id));
-    leader.appendChild(card);
+  // ---------- Firebase ----------
+  function initFirebase() {
+    const path = `rooms/${ROOM}/state`;
+    dbRef = firebase.database().ref(path);
+    dbRef.on("value", (snap) => {
+      const val = snap.val();
+      if (!val) {
+        // Erstinitialisierung
+        state = migrate({
+          profiles: {},
+          tournaments: []
+        });
+        saveState(); // schreibt Grundgerüst
+      } else {
+        const before = state;
+        state = migrate(normalize(val));
+        renderAll(before);
+      }
+    });
+  }
+  function saveState() {
+    if (!dbRef) return;
+    dbRef.set(state);
+  }
+
+  // ---------- Login & "Profil merken" ----------
+  const LS_LAST_PROFILE_KEY = `pst_last_profile_${ROOM}`;
+  function rememberProfile(pid) {
+    try { localStorage.setItem(LS_LAST_PROFILE_KEY, pid || ""); } catch {}
+  }
+  function readRememberedProfile() {
+    try { return localStorage.getItem(LS_LAST_PROFILE_KEY) || ""; } catch { return ""; }
+  }
+
+  // ---------- Streaks ----------
+  function profilePlayedOn(pid, iso) {
+    return state.tournaments.some(t =>
+      (t.players || []).includes(pid) &&
+      (t.rounds || []).some(r => r.date === iso && (+r.chips?.[pid] || 0) > 0)
+    );
+  }
+  function anyPlayedOn(iso) {
+    return state.tournaments.some(t => (t.rounds || []).some(r => r.date === iso));
+  }
+  function isWeekday(iso) {
+    const d = new Date(iso + "T00:00:00");
+    const w = d.getDay(); // 0 So ... 6 Sa
+    return w >= 1 && w <= 5;
+  }
+  function computeStreaks(pid) {
+    if (!pid) return { current: 0, best: 0 };
+    // frühestes Datum
+    const allDates = state.tournaments.flatMap(t => (t.rounds || []).map(r => r.date)).filter(Boolean).sort();
+    const startIso = allDates[0] || todayIso();
+    const today = todayIso();
+    let cur = 0, best = 0;
+    for (let d = startIso; ; ) {
+      const weekday = isWeekday(d);
+      const any = anyPlayedOn(d);
+      const me = profilePlayedOn(pid, d);
+
+      // nutze pro Spieler: streakWeek (welche Tage pausiert)
+      const p = state.profiles[pid];
+      const dow = new Date(d + "T00:00:00").getDay(); // 0..6
+      const pauseDay = p?.streakWeek?.[dow] === false; // false => pausiert
+      if (weekday || true) {
+        if (any) {
+          if (me) { cur += 1; best = Math.max(best, cur); }
+          else { if (!pauseDay) cur = 0; }
+        } else {
+          if (!pauseDay) cur = 0;
+        }
+      }
+      if (d === today) break;
+      const nd = new Date(d + "T00:00:00"); nd.setDate(nd.getDate() + 1); d = nd.toISOString().slice(0, 10);
+    }
+    return { current: cur, best };
+  }
+
+  // ---------- UI: Avatar im Header ----------
+  function setHeaderAvatar(pid) {
+    const btn = $("btnHeaderProfile");
+    const img = $("headerAvatar");
+    if (!pid || !state.profiles[pid]) {
+      btn.classList.add("hidden");
+      return;
+    }
+    img.src = state.profiles[pid].avatarDataUrl || DEFAULT_AVATAR;
+    btn.classList.remove("hidden");
+  }
+
+  // ---------- Render Switch ----------
+  function show(viewId) {
+    qsa("section").forEach(s => s.classList.add("hidden"));
+    $(viewId).classList.remove("hidden");
+  }
+
+  // ---------- Einstieg ----------
+  window.addEventListener("load", () => {
+    initFirebase();
+
+    // Auth Landing Events
+    $("btnLoginProfile").addEventListener("click", showLoginList);
+    $("linkRegister").addEventListener("click", (e) => { e.preventDefault(); registerProfileFlow(); });
+    $("linkOtherProfile").addEventListener("click", (e) => { e.preventDefault(); showLoginList(true); });
+
+    // Header Avatar → Profil-Quick-View (Profilseite)
+    $("btnHeaderProfile").addEventListener("click", () => {
+      if (!currentProfileId) return;
+      openProfileView(currentProfileId, /*scope*/"all");
+    });
+
+    // Home
+    $("btnNewTournament").addEventListener("click", newTournamentFlow);
+    $("btnAllTime").addEventListener("click", openAllTime);
+
+    // Tournament view
+    $("btnBackHome").addEventListener("click", () => showHome());
+    $("addRoundBtn").addEventListener("click", () => openAddRoundPrompt());
+    $("btnTourSettings").addEventListener("click", openTournamentSettings);
+
+    // Profile view
+    $("profBack").addEventListener("click", () => {
+      if (currentTournamentId) show("view_tournament"); else showHome();
+    });
+    $("profPdf").addEventListener("click", exportProfilePdf);
   });
 
-  const tbody=document.getElementById('roundsBody'); tbody.innerHTML='';
-  const rounds=[...t.rounds].sort((a,b)=> (b.date||'').localeCompare(a.date||''));
-  const targetTotal = t.playerCount*t.startChips;
+  // ---------- Render All ----------
+  function renderAll(before) {
+    // Wenn noch kein Profil gewählt, prüfe „zuletzt gemerkt“
+    if (!currentProfileId) {
+      const remembered = readRememberedProfile();
+      if (remembered && state.profiles[remembered]) {
+        // zeige direkt Auth mit großem Avatar (Click → Passwort falls gesetzt)
+        currentProfileId = null; // erst nach Klick setzen
+      }
+    }
+    // Header Avatar
+    setHeaderAvatar(currentProfileId);
+    if (!currentProfileId) {
+      show("view_auth"); renderAuth();
+    } else if (!currentTournamentId) {
+      showHome();
+    } else {
+      renderTournament();
+    }
+  }
+  // ---------- AUTH ----------
+  function renderAuth() {
+    const grid = $("authList");
+    grid.innerHTML = "";
 
-  rounds.forEach(r=>{
-    const sum=(t.players||[]).reduce((acc,pid)=> acc+(+r.chips?.[pid]||0),0);
-    const isC=sum===targetTotal; const isUnder=sum<targetTotal;
-    const rowClass = isC? 'row': (isUnder? 'row incomplete':'row overshoot');
-    const ranks = rankCompetition((t.players||[]).map(pid=> ({name:pid, value:+(r.chips?.[pid]||0)})));
-    const order=(t.players||[]).slice().sort((a,b)=> ranks[a]-ranks[b]);
+    // Wenn ein „gemerktes Profil“ existiert: als große Kachel anzeigen
+    const remembered = readRememberedProfile();
+    if (remembered && state.profiles[remembered]) {
+      grid.style.display = "grid";
+      const p = state.profiles[remembered];
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.cursor = "pointer";
+      card.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl || DEFAULT_AVATAR}" alt="${p.name}"></span>
+          <div><b>${p.name}</b><div class="sub">Tippen zum Einloggen</div></div>
+        </div>`;
+      card.onclick = async () => {
+        // Passwort abfragen, wenn vorhanden
+        if (p.pwHash) {
+          const pw = prompt("Passwort für " + p.name + ":");
+          if (!pw) return;
+          const h = await sha256Hex(pw);
+          if (h !== p.pwHash) return alert("Falsches Passwort");
+        }
+        currentProfileId = p.id;
+        rememberProfile(p.id);
+        showHome();
+      };
+      grid.appendChild(card);
+    }
 
-    const inner=document.createElement('table'); inner.style.width='100%';
-    let html = '';
-    const first = order[0];
-    const pctFirst = sum? ((+r.chips?.[first]||0)/sum*100):0;
-    const firstPaused = Array.isArray(r.streakPause) && r.streakPause.includes(first);
-    html += `
-      <tr>
-        <td style="min-width:120px;padding:0 8px 8px 8px" rowspan="${order.length}"><b>${fmtDate(r.date)}</b></td>
-        <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[first]}</td>
-        <td style="padding:0 8px 4px 8px">${getProfile(first)?.name||'?'}${firstPaused?' <span class="sub">(Streak pausiert)</span>':''}</td>
-        <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[first]||0}</b> · ${fmtPct(pctFirst)}%</span></td>
-      </tr>`;
-    for(let i=1;i<order.length;i++){
-      const pid=order[i];
-      const pct = sum? ((+r.chips?.[pid]||0)/sum*100):0;
-      const paused = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
+    // Liste aller Profile
+    Object.values(state.profiles).forEach(p => {
+      const btn = document.createElement("button");
+      btn.className = "btn ghost";
+      btn.style.display = "flex";
+      btn.style.flexDirection = "column";
+      btn.style.alignItems = "center";
+      btn.style.justifyContent = "center";
+      btn.style.padding = "16px";
+      btn.style.borderRadius = "14px";
+      btn.innerHTML = `<img class="avatar mid" src="${p.avatarDataUrl || DEFAULT_AVATAR}" alt="${p.name}"/><div style="margin-top:6px">${p.name}</div>`;
+      btn.onclick = async () => {
+        if (p.pwHash) {
+          const pw = prompt("Passwort für " + p.name + ":");
+          if (!pw) return;
+          const h = await sha256Hex(pw);
+          if (h !== p.pwHash) return alert("Falsches Passwort");
+        }
+        currentProfileId = p.id;
+        rememberProfile(p.id);
+        showHome();
+      };
+      grid.appendChild(btn);
+    });
+
+    grid.style.display = Object.keys(state.profiles).length ? "grid" : "none";
+  }
+
+  async function sha256Hex(str) {
+    if (window.crypto?.subtle) {
+      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+      return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    // Fallback
+    let h = 0; for (let i = 0; i < str.length; i++) { h = ((h << 5) - h) + str.charCodeAt(i); h |= 0; }
+    return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+  }
+
+  function registerProfileFlow() {
+    const name = prompt("Name für neues Profil:");
+    if (!name) return;
+    const withPw = confirm("Passwort setzen?");
+    let pwHash = null;
+    if (withPw) {
+      const p1 = prompt("Neues Passwort (mind. 4 Zeichen)");
+      if (!p1 || p1.length < 4) return alert("Zu kurz");
+      const p2 = prompt("Passwort wiederholen");
+      if (p1 !== p2) return alert("Nicht gleich");
+      sha256Hex(p1).then(h => {
+        pwHash = h;
+        createProfile(name, pwHash);
+      });
+    } else {
+      createProfile(name, null);
+    }
+  }
+
+  function createProfile(name, pwHash) {
+    const pid = uid('p');
+    state.profiles[pid] = {
+      id: pid,
+      name,
+      pwHash,
+      avatarDataUrl: DEFAULT_AVATAR,
+      streakWeek: { 0:false,1:true,2:true,3:true,4:true,5:false,6:false }
+    };
+    saveState();
+    renderAuth();
+  }
+
+  // ---------- HOME ----------
+  function showHome() {
+    if (!currentProfileId) { show("view_auth"); renderAuth(); return; }
+    $("whoPill").textContent = "Eingeloggt als: " + (state.profiles[currentProfileId]?.name || "—");
+    setHeaderAvatar(currentProfileId);
+    show("view_home");
+    renderHome();
+  }
+
+  function renderHome() {
+    const mine = $("myTournamentList");
+    const other = $("otherTournamentList");
+    mine.innerHTML = other.innerHTML = "";
+
+    const list = [...state.tournaments].sort((a,b) => (b.startDate||"").localeCompare(a.startDate||""));
+
+    list.forEach(t => {
+      const inTour = (t.players || []).includes(currentProfileId);
+      const total = (t.playerCount || 0) * (t.startChips || 0);
+      const names = (t.players || []).map(pid => state.profiles[pid]?.name || "?").join(", ");
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.cursor = "pointer";
+      card.style.padding = "14px";
+      card.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div>
+            <h3 style="margin:0">${t.name}</h3>
+            <div class="sub">Start: ${fmtDate(t.startDate)} · Spieler: ${names} · Soll: ${total}</div>
+          </div>
+          <div><button class="btn small">Öffnen</button></div>
+        </div>`;
+      card.onclick = () => openTournament(t.id);
+
+      (inTour ? mine : other).appendChild(card);
+    });
+  }
+
+  function newTournamentFlow() {
+    if (!currentProfileId) return alert("Bitte zuerst einloggen.");
+    const name = prompt("Name des Turniers?");
+    if (!name) return;
+    const date = prompt("Startdatum (YYYY-MM-DD)?", todayIso()) || todayIso();
+    const startChips = Math.max(1, parseInt(prompt("Start-Chips pro Person?", "640") || "640", 10));
+    const playerCount = Math.max(2, parseInt(prompt("Spielerzahl (für Soll)?", "4") || "4", 10));
+
+    // Spieler wählen (einfach alle existierenden anzeigen)
+    const allPlayers = Object.values(state.profiles);
+    const chosen = allPlayers.filter(p => confirm(`Nimmt ${p.name} teil?`)).map(p => p.id);
+    if (chosen.length < 2) return alert("Mindestens 2 Spieler.");
+
+    const t = {
+      id: uid('t'),
+      name, startDate: date, players: chosen,
+      startChips, playerCount,
+      admins: [currentProfileId],
+      rounds: []
+    };
+    state.tournaments.push(t);
+    saveState();
+    openTournament(t.id);
+  }
+
+  // ---------- TOURNAMENT ----------
+  function openTournament(tid) {
+    currentTournamentId = tid;
+    show("view_tournament");
+    renderTournament();
+  }
+
+  function computeTournamentInfo(t) {
+    if (!t || !Array.isArray(t.rounds) || t.rounds.length === 0) {
+      return { last: null, hasIncomplete: false, hasOvershoot: false, total: (t ? t.playerCount * t.startChips : 0) };
+    }
+    const sorted = [...t.rounds].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const last = sorted[0];
+    const sum = (t.players || []).reduce((a, p) => a + (+last.chips?.[p] || 0), 0);
+    const total = t.playerCount * t.startChips;
+    const hasIncomplete = t.rounds.some(r => (t.players || []).reduce((a, p) => a + (+r.chips?.[p] || 0), 0) < total);
+    const hasOvershoot = t.rounds.some(r => (t.players || []).reduce((a, p) => a + (+r.chips?.[p] || 0), 0) > total);
+    return { last: { sum, total }, hasIncomplete, hasOvershoot, total };
+  }
+
+  function rankCompetition(items) {
+    const s = [...items].sort((a, b) => b.value - a.value);
+    let rank = 0, seen = 0, prev = Infinity;
+    const map = {};
+    for (const it of s) {
+      seen++;
+      if (it.value !== prev) { rank = seen; prev = it.value; }
+      map[it.name] = rank;
+    }
+    return map;
+  }
+
+  function computeTournamentStats(t) {
+    const totals = {}, counts = {}, avgPct = {}, avgChips = {};
+    (t.players || []).forEach(pid => { totals[pid] = 0; counts[pid] = 0; });
+    const asc = [...t.rounds].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    asc.forEach(r => {
+      const sum = (t.players || []).reduce((a, p) => a + (+r.chips?.[p] || 0), 0);
+      (t.players || []).forEach(pid => {
+        totals[pid] += (+r.chips?.[pid] || 0);
+        counts[pid] += 1;
+      });
+    });
+    (t.players || []).forEach(pid => {
+      avgChips[pid] = counts[pid] ? totals[pid] / counts[pid] : 0;
+      const maxRoundTotal = (t.playerCount * t.startChips) || 1;
+      avgPct[pid] = (avgChips[pid] / maxRoundTotal) * 100;
+    });
+    const overallRank = rankCompetition((t.players || []).map(pid => ({ name: pid, value: avgPct[pid] })));
+    return { players: (t.players || []).map(pid => ({
+      id: pid,
+      name: state.profiles[pid]?.name || "?",
+      avgPct: avgPct[pid] || 0,
+      avgChips: avgChips[pid] || 0,
+      rank: overallRank[pid] || 4
+    })) };
+  }
+
+  function renderTournament() {
+    const t = state.tournaments.find(x => x.id === currentTournamentId);
+    if (!t) return;
+
+    $("dashTitle").textContent = t.name;
+    $("dashSub").textContent = `Start: ${fmtDate(t.startDate)} · Spieler: ${(t.players || []).map(pid => state.profiles[pid]?.name || "?").join(", ")} · Soll: ${t.playerCount * t.startChips}`;
+
+    // Status
+    const info = computeTournamentInfo(t);
+    const ss = $("sumState");
+    if (info.last) {
+      const { sum, total } = info.last;
+      const isC = sum === total;
+      ss.textContent = isC ? `Letzte Runde: ${sum} / ${total}` :
+        `Letzte Runde: ${sum} / ${total} · ${sum < total ? 'unvollständig' : 'überschüssig'}`;
+      ss.className = 'pill ' + (isC ? 'good' : (sum < total ? 'warn' : 'bad'));
+    } else {
+      ss.textContent = 'Letzte Runde: —';
+      ss.className = 'pill';
+    }
+    $("flagIncomplete").style.display = info.hasIncomplete ? "" : "none";
+    $("flagOvershoot").style.display = info.hasOvershoot ? "" : "none";
+
+    // Leaderboard
+    const stats = computeTournamentStats(t);
+    const leader = $("leaderGrid");
+    leader.innerHTML = "";
+    stats.players.sort((a, b) => a.rank - b.rank).forEach(c => {
+      const medal = c.rank === 1 ? '🥇' : c.rank === 2 ? '🥈' : c.rank === 3 ? '🥉' : '';
+      const stBest = computeStreaks(c.id).best;
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `<h3>${medal ? medal + ' ' : ''}<img class="avatar mini" src="${state.profiles[c.id]?.avatarDataUrl || DEFAULT_AVATAR}"> ${c.name}</h3>
+        <div class="sub">Ø Chips: <b>${Math.round(c.avgChips)}</b> · Ø %Stack: <b>${fmtPct(c.avgPct)}</b>%</div>
+        <div class="rankRow"><div>Platz <b>${c.rank}</b></div><div class="sub">Best 🔥 ${stBest}</div></div>
+        <div class="bar gray"><span style="width:${clamp(c.avgPct,0,100)}%"></span></div>`;
+      card.style.cursor = "pointer";
+      card.addEventListener("click", () => openProfileView(c.id, /*scope*/ t.id));
+      leader.appendChild(card);
+    });
+
+    // Runden
+    const tbody = $("roundsBody"); tbody.innerHTML = "";
+    const rounds = [...t.rounds].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const targetTotal = t.playerCount * t.startChips;
+
+    rounds.forEach(r => {
+      const sum = (t.players || []).reduce((acc, pid) => acc + (+r.chips?.[pid] || 0), 0);
+      const isC = sum === targetTotal; const isUnder = sum < targetTotal;
+      const rowClass = isC ? 'row' : (isUnder ? 'row incomplete' : 'row overshoot');
+      const ranks = rankCompetition((t.players || []).map(pid => ({ name: pid, value: +(+r.chips?.[pid] || 0) })));
+      const order = (t.players || []).slice().sort((a, b) => ranks[a] - ranks[b]);
+
+      const tr = document.createElement("tr"); tr.className = rowClass;
+      const td = document.createElement("td"); td.colSpan = 4;
+
+      let html = `<table style="width:100%"><tbody>`;
+      order.forEach((pid, idx) => {
+        const pct = sum ? ((+r.chips?.[pid] || 0) / sum * 100) : 0;
+        if (idx === 0) {
+          html += `<tr>
+            <td style="min-width:120px;padding:0 8px 8px 8px" rowspan="${order.length}"><b>${fmtDate(r.date)}</b>${r.stakeMode==='stake' ? ' <span class="pill warn">Mit Einsatz</span>':''}</td>
+            <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[pid]}</td>
+            <td style="padding:0 8px 4px 8px">${state.profiles[pid]?.name||'?'}</td>
+            <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[pid]||0}</b> · ${fmtPct(pct)}%</span></td>
+          </tr>`;
+        } else {
+          html += `<tr>
+            <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[pid]}</td>
+            <td style="padding:0 8px 4px 8px">${state.profiles[pid]?.name||'?'}</td>
+            <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[pid]||0}</b> · ${fmtPct(pct)}%</span></td>
+          </tr>`;
+        }
+      });
+
+      // Einsatz-Berechnung (falls aktiv)
+      let moneyLine = '';
+      if (r.stakeMode === 'stake' && r.stakePerPersonCents > 0) {
+        const participants = order.filter(pid => (+r.chips?.[pid] || 0) > 0);
+        const pot = participants.length * r.stakePerPersonCents;
+        const chipValue = sum ? pot / sum : 0;
+        // Summe je Spieler
+        const moneyRows = order.map(pid => {
+          const chips = (+r.chips?.[pid] || 0);
+          const val = Math.round(chips * chipValue) - (participants.includes(pid) ? r.stakePerPersonCents : 0);
+          return { pid, val };
+        });
+        const sumVal = moneyRows.reduce((a, x) => a + x.val, 0);
+        moneyLine = `<div class="sub">Einsatz: ${fmtMoney(r.stakePerPersonCents)} · Spieler: ${participants.length} · Pot: ${fmtMoney(pot)} · Chip: ${chipValue ? chipValue.toFixed(4) : '0'}€ · Summe Geld: ${fmtMoney(sumVal)}</div>`;
+      }
+
       html += `
         <tr>
-          <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[pid]}</td>
-          <td style="padding:0 8px 4px 8px">${getProfile(pid)?.name||'?'}${paused?' <span class="sub">(Streak pausiert)</span>':''}</td>
-          <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[pid]||0}</b> · ${fmtPct(pct)}%</span></td>
-        </tr>`;
-    }
-    html += `
-      <tr>
-        <td colspan="4" style="padding:6px 8px 10px">
-          <div class="footerFlex">
-            <div class="${isC?'ok': (isUnder?'':'bad')}">Rundensumme: <b>${sum}</b> / ${targetTotal} · ${isC? '✓ OK': (isUnder? '✗ Unvollständig':'✗ Überschüssig')}</div>
-            <div class="sub" style="flex:1">Kommentar: ${(r.comments&&r.comments.length)? r.comments.map(c=> `• ${c.text}`).join(' \u00A0 ') : '—'}</div>
-            <div>
-              ${(!isC && isTournamentAdmin(t) && !VIEW_ONLY) ? `<button class="btn small ghost" data-edit-id="${r.id}">Bearbeiten</button>`:''}
-              ${(isTournamentAdmin(t) && !VIEW_ONLY)? `<button class="btn small ghost" data-cmt-id="${r.id}">Kommentar</button>`:''}
-              ${(isTournamentAdmin(t) && !VIEW_ONLY)? `<button class="btn small danger" data-del-id="${r.id}">Löschen</button>`:''}
+          <td colspan="3" style="padding:6px 8px 10px">
+            <div class="sub">Kommentar: ${(r.comments && r.comments.length) ? r.comments.map(c => `• ${c.text}`).join(' \u00A0 ') : '—'}</div>
+          </td>
+          <td style="padding:6px 8px 10px">
+            <div class="${isC ? 'ok' : (isUnder ? '' : 'bad')}">Summe: <b>${sum}</b> / ${targetTotal} · ${isC ? 'OK' : (isUnder ? 'Unvollständig' : 'Überschüssig')}</div>
+            ${moneyLine}
+            <div style="margin-top:6px; display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap">
+              ${isTournamentAdmin(t) ? `<button class="btn small ghost" data-edit="${r.id}">Bearbeiten</button>` : ''}
+              ${isTournamentAdmin(t) ? `<button class="btn small ghost" data-cmt="${r.id}">Kommentar</button>` : ''}
+              ${isTournamentAdmin(t) ? `<button class="btn small danger" data-del="${r.id}">Löschen</button>` : ''}
             </div>
-          </div>
-        </td>
-      </tr>`;
-    inner.innerHTML = html;
-    const tr=document.createElement('tr'); tr.className=rowClass; const td=document.createElement('td'); td.colSpan=4; td.appendChild(inner); tr.appendChild(td); tbody.appendChild(tr);
-  });
-
-  document.querySelectorAll('[data-edit-id]').forEach(b=> b.addEventListener('click', ()=> openRoundEdit(t.id, b.getAttribute('data-edit-id'))));
-  document.querySelectorAll('[data-del-id]').forEach(b=> b.addEventListener('click', ()=> deleteRound(t.id, b.getAttribute('data-del-id'))));
-  document.querySelectorAll('[data-cmt-id]').forEach(b=> b.addEventListener('click', ()=> openComment(t.id, b.getAttribute('data-cmt-id'))));
-}
-
-// Runden CRUD + Rest auffüllen + pro-Spieler Streak-Pause
-document.getElementById('addRoundBtn').addEventListener('click', ()=> openRoundEdit(curTournamentId, null));
-function openRoundEdit(tid, rid){
-  const t=state.tournaments.find(x=> x.id===tid); if(!t) return alert('Turnier fehlt');
-  if(!(t.admins||[]).includes(currentProfileId)) return alert('Nur Turnier-Admin');
-  if(VIEW_ONLY) return alert('Schreibschutz aktiv.');
-  const dlg=document.getElementById('dlgRound'); const form=document.getElementById('roundForm'); form.innerHTML='';
-  const r = rid? t.rounds.find(x=> x.id===rid) : {date:new Date().toISOString().slice(0,10), chips:{}, streakPause:[]};
-  const date=`<label>Datum<input type="date" id="r_date" value="${r.date}"></label>`;
-  const grid=document.createElement('div'); grid.className='grid2';
-
-  (t.players||[]).forEach(pid=>{
-    const name=getProfile(pid)?.name||'?';
-    const val=+r.chips?.[pid]||0;
-    const paused = Array.isArray(r.streakPause) && r.streakPause.includes(pid);
-    const row=document.createElement('div');
-    row.innerHTML=`
-      <label>${name} (Chips)
-        <input type="number" min="0" step="1" data-chip="${pid}" value="${val}">
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;margin-top:4px">
-        <input type="checkbox" data-spause="${pid}" ${paused?'checked':''}>
-        <span>Streak heute pausieren</span>
-      </label>`;
-    grid.appendChild(row);
-  });
-
-  form.insertAdjacentHTML('beforeend', date);
-  form.appendChild(grid);
-
-  const sumHint=document.getElementById('sumHint');
-  function computeSum(){
-    return (t.players||[]).reduce((a,pid)=> a+(+form.querySelector(`[data-chip="${pid}"]`).value||0),0);
-  }
-  function upd(){
-    const sum=computeSum();
-    const target=t.playerCount*t.startChips; const diff=target-sum;
-    sumHint.textContent = diff===0? `✓ Alles gut — Summe: ${sum} / ${target}` : (diff>0? `Es fehlen noch ${diff} Chips — Summe: ${sum} / ${target}` : `${-diff} Chips zu viel — Summe: ${sum} / ${target}`);
-    sumHint.style.color = diff===0? 'var(--good)': (diff>0? '#ffd79c':'#ffb2b2');
-  }
-  form.querySelectorAll('input[type="number"]').forEach(i=> i.addEventListener('input', upd)); upd();
-
-  document.getElementById('btnFillRest').onclick=()=>{
-    const target=t.playerCount*t.startChips;
-    let sum=computeSum();
-    let rest = target - sum;
-    if(rest<=0) return;
-    const fields = (t.players||[]).map(pid=> form.querySelector(`[data-chip="${pid}"]`));
-    const n = fields.length;
-    const base = Math.floor(rest / n);
-    const extra = rest % n;
-    fields.forEach((inp, idx)=>{ inp.value = (+inp.value||0) + base + (idx<extra?1:0); });
-    upd();
-  };
-
-  dlgOpen(dlg);
-  document.getElementById('roundCancel').onclick=()=> dlgClose(dlg);
-  document.getElementById('roundSave').onclick=()=>{
-    const date=(document.getElementById('r_date').value)||new Date().toISOString().slice(0,10);
-    const chips={}; (t.players||[]).forEach(pid=> chips[pid]= +(form.querySelector(`[data-chip="${pid}"]`).value||0));
-    const streakPause=(t.players||[]).filter(pid=> form.querySelector(`[data-spause="${pid}"]`)?.checked);
-    const sum=Object.values(chips).reduce((a,b)=> a+b,0);
-    const obj={ id: rid||uid('r'), date, chips, complete:(sum===t.playerCount*t.startChips), comments:r.comments||[], streakPause };
-    if(rid){ const i=t.rounds.findIndex(x=> x.id===rid); if(i>=0) t.rounds[i]=obj; } else t.rounds.push(obj);
-    save(); dlgClose(dlg); render('tournament');
-  };
-}
-function deleteRound(tid, rid){ if(VIEW_ONLY) return alert('Schreibschutz aktiv.'); const t=state.tournaments.find(x=> x.id===tid); if(!t) return; if(!(t.admins||[]).includes(currentProfileId)) return alert('Nur Turnier-Admin'); if(confirm('Runde wirklich löschen?')){ t.rounds=t.rounds.filter(r=> r.id!==rid); save(); render('tournament'); } }
-function openComment(tid, rid){ if(VIEW_ONLY) return alert('Schreibschutz aktiv.'); const t=state.tournaments.find(x=> x.id===tid); if(!t) return; if(!(t.admins||[]).includes(currentProfileId)) return alert('Nur Turnier-Admin'); const dlg=document.getElementById('dlgComment'); const r=t.rounds.find(x=> x.id===rid); document.getElementById('commentText').value=(r.comments?.[0]?.text)||''; dlgOpen(dlg); document.getElementById('commentCancel').onclick=()=> dlgClose(dlg); document.getElementById('commentSave').onclick=()=>{ const txt=(document.getElementById('commentText').value||'').trim(); r.comments = txt? [{by:currentProfileId, at:new Date().toISOString(), text:txt}]: []; save(); dlgClose(dlg); render('tournament'); } }
-
-// Turnier-Einstellungen
-document.getElementById('btnTourSettings').addEventListener('click', ()=>{
-  const t=state.tournaments.find(x=> x.id===curTournamentId); if(!t) return; if(!(t.admins||[]).includes(currentProfileId)) return alert('Nur Turnier-Admin');
-  if(VIEW_ONLY) return alert('Schreibschutz aktiv.');
-  const dlg=document.getElementById('dlgTourSettings');
-  document.getElementById('setStartChips').value=t.startChips; document.getElementById('setPlayerCount').value=t.playerCount;
-  const wrap=document.getElementById('setAdmins'); wrap.innerHTML='';
-  state.profiles.forEach(p=>{ const lab=document.createElement('label'); lab.style.display='flex'; lab.style.gap='8px'; lab.style.alignItems='center'; const checked=(t.admins||[]).includes(p.id); lab.innerHTML=`<input type='checkbox' value='${p.id}' ${checked?'checked':''}> ${p.name}`; wrap.appendChild(lab); });
-  dlgOpen(dlg);
-  document.getElementById('setCancel').onclick=()=> dlgClose(dlg);
-  document.getElementById('setSave').onclick=()=>{ t.startChips=Math.max(1,+document.getElementById('setStartChips').value||t.startChips); t.playerCount=Math.max(2,+document.getElementById('setPlayerCount').value||t.playerCount); t.admins=[...wrap.querySelectorAll('input:checked')].map(i=> i.value); save(); dlgClose(dlg); render('tournament'); };
-});
-
-// Globale Streak-Einstellungen (Woche)
-document.getElementById('btnStreakSettings')?.addEventListener('click', ()=>{
-  if(VIEW_ONLY) return alert('Schreibschutz aktiv.');
-  const dlg=document.getElementById('dlgStreakSettings');
-  const grid=document.getElementById('weekPauseGrid'); grid.innerHTML='';
-  const names=['So','Mo','Di','Mi','Do','Fr','Sa'];
-  for(let i=0;i<7;i++){
-    const lab=document.createElement('label'); lab.style.display='flex'; lab.style.alignItems='center'; lab.style.gap='8px';
-    const checked = !!state.streakWeekPause?.[i];
-    lab.innerHTML = `<input type="checkbox" data-wday="${i}" ${checked?'checked':''}> <b>${names[i]}</b> <span class="sub">(pausiert)</span>`;
-    grid.appendChild(lab);
-  }
-  dlgOpen(dlg);
-  document.getElementById('streakCancel').onclick=()=> dlgClose(dlg);
-  document.getElementById('streakSave').onclick=()=>{
-    const obj={};
-    document.querySelectorAll('[data-wday]').forEach(inp=>{
-      const i=+inp.getAttribute('data-wday'); obj[i]=inp.checked;
+          </td>
+        </tr>
+      </tbody></table>`;
+      td.innerHTML = html;
+      tr.appendChild(td);
+      tbody.appendChild(tr);
     });
-    state.streakWeekPause = obj;
-    save(); dlgClose(dlg);
-    render(!tourSec.classList.contains('hidden')?'tournament':(!authSec.classList.contains('hidden')?'auth':'home'));
-  };
-});
 
-// ===== Speichern/Laden (Firebase + LocalCache)
-function save(){
-  saveLocal();
-  if(!USE_FIREBASE) return;
-  if(VIEW_ONLY) return; // Viewer schreibt nicht
-  clearTimeout(cloudSaveTimer);
-  cloudSaveTimer = setTimeout(()=>{
-    refState.set(state).catch(err=>{
-      console.error('Cloud save failed', err);
-      alert('Konnte nicht in die Cloud speichern (offline?)');
-    });
-  }, 300);
-}
-function initCloud(){
-  if(!USE_FIREBASE) return;
-  db = firebase.database();
-  refState = db.ref(`rooms/${ROOM_ID}/state`);
+    // Bind Buttons
+    qsa("[data-edit]").forEach(b => b.addEventListener("click", () => openEditRoundPrompt(t.id, b.getAttribute("data-edit"))));
+    qsa("[data-del]").forEach(b => b.addEventListener("click", () => deleteRound(t.id, b.getAttribute("data-del"))));
+    qsa("[data-cmt]").forEach(b => b.addEventListener("click", () => editComment(t.id, b.getAttribute("data-cmt"))));
+  }
 
-  // Live lesen
-  refState.on('value', snap=>{
-    const val=snap.val();
-    if(val){
-      state=migrate(normalize(val));
-      saveLocal();
-      // Falls Benutzer noch nicht eingeloggt → Auth-View
-      render(!tourSec.classList.contains('hidden')?'tournament':(!authSec.classList.contains('hidden')?'auth':'home'));
-    } else {
-      // Leeren initialen State schreiben (nur, wenn nicht Viewer)
-      if(!VIEW_ONLY){ refState.set(state).catch(console.error); }
+  function isTournamentAdmin(t) {
+    return !!(t.admins || []).includes(currentProfileId);
+  }
+
+  // Turnier-Einstellungen: Admins nur aus Spielern
+  function openTournamentSettings() {
+    const t = state.tournaments.find(x => x.id === currentTournamentId);
+    if (!t) return;
+    if (!isTournamentAdmin(t)) return alert("Nur Turnier-Admin.");
+    const sc = Math.max(1, parseInt(prompt("Start-Chips pro Person:", String(t.startChips)) || String(t.startChips), 10));
+    const pc = Math.max(2, parseInt(prompt("Soll-Spielerzahl:", String(t.playerCount)) || String(t.playerCount), 10));
+
+    // Admins wählen (nur Spieler anzeigen)
+    const newAdmins = (t.players || []).filter(pid => confirm(`Soll ${state.profiles[pid]?.name} Admin sein?`));
+    t.startChips = sc; t.playerCount = pc; t.admins = newAdmins;
+    saveState();
+    renderTournament();
+  }
+
+  // ---------- Runden: Neu / Bearbeiten / Kommentar / Löschen ----------
+  function openAddRoundPrompt() {
+    const t = state.tournaments.find(x => x.id === currentTournamentId);
+    if (!t) return;
+    if (!isTournamentAdmin(t)) return alert("Nur Turnier-Admin.");
+
+    const date = prompt("Datum (YYYY-MM-DD):", todayIso()) || todayIso();
+
+    // Modus
+    const mode = confirm("Mit Einsatz? OK=Ja / Abbrechen=Nein") ? 'stake' : 'none';
+    let stakeCents = 0;
+    if (mode === 'stake') {
+      const euro = prompt("Einsatz pro Person (z.B. 2,50):", "0,00") || "0,00";
+      stakeCents = parseMoneyToCents(euro);
     }
+
+    const chips = {};
+    (t.players || []).forEach(pid => {
+      const placeholder = "0"; // „0“-Platzhalter
+      let val = prompt(`Chips für ${state.profiles[pid]?.name} (leer=0):`, placeholder);
+      if (val === null) val = "0";
+      val = val.trim();
+      if (val === "" || val === "0") chips[pid] = 0;
+      else chips[pid] = parseInt(val, 10) || 0;
+    });
+
+    const sum = Object.values(chips).reduce((a, b) => a + b, 0);
+    const complete = (sum === t.playerCount * t.startChips);
+    const r = { id: uid('r'), date, chips, complete, comments: [], stakeMode: mode, stakePerPersonCents: stakeCents };
+    t.rounds.push(r);
+    saveState();
+    renderTournament();
+  }
+
+  function openEditRoundPrompt(tid, rid) {
+    const t = state.tournaments.find(x => x.id === tid);
+    if (!t) return;
+    if (!isTournamentAdmin(t)) return alert("Nur Turnier-Admin.");
+    const r = t.rounds.find(x => x.id === rid);
+    if (!r) return;
+
+    const date = prompt("Datum (YYYY-MM-DD):", r.date) || r.date;
+
+    const mode = confirm("Mit Einsatz? OK=Ja / Abbrechen=Nein") ? 'stake' : 'none';
+    let stakeCents = r.stakePerPersonCents || 0;
+    if (mode === 'stake') {
+      const euro = prompt("Einsatz pro Person (z.B. 2,50):", r.stakePerPersonCents ? centsToInput(r.stakePerPersonCents) : "0,00") || "0,00";
+      stakeCents = parseMoneyToCents(euro);
+    }
+
+    const chips = {};
+    (t.players || []).forEach(pid => {
+      const old = +r.chips?.[pid] || 0;
+      let val = prompt(`Chips für ${state.profiles[pid]?.name}:`, String(old));
+      if (val === null) val = String(old);
+      val = val.trim();
+      if (val === "" || val === "0") chips[pid] = 0;
+      else chips[pid] = parseInt(val, 10) || 0;
+    });
+
+    const sum = Object.values(chips).reduce((a, b) => a + b, 0);
+    const complete = (sum === t.playerCount * t.startChips);
+
+    Object.assign(r, { date, chips, complete, stakeMode: mode, stakePerPersonCents: stakeCents });
+    saveState();
+    renderTournament();
+  }
+
+  function editComment(tid, rid) {
+    const t = state.tournaments.find(x => x.id === tid);
+    if (!t) return;
+    if (!isTournamentAdmin(t)) return alert("Nur Turnier-Admin.");
+    const r = t.rounds.find(x => x.id === rid);
+    if (!r) return;
+    const prev = (r.comments && r.comments[0]?.text) || "";
+    const txt = prompt("Kommentar (kurze Notiz…)", prev) || "";
+    r.comments = txt.trim() ? [{ by: currentProfileId, at: new Date().toISOString(), text: txt.trim() }] : [];
+    saveState();
+    renderTournament();
+  }
+
+  function deleteRound(tid, rid) {
+    const t = state.tournaments.find(x => x.id === tid);
+    if (!t) return;
+    if (!isTournamentAdmin(t)) return alert("Nur Turnier-Admin.");
+    if (!confirm("Runde wirklich löschen?")) return;
+    t.rounds = t.rounds.filter(r => r.id !== rid);
+    saveState();
+    renderTournament();
+  }
+
+  function parseMoneyToCents(str) {
+    const s = (str || "").trim().replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
+    const v = parseFloat(s);
+    if (!isFinite(v)) return 0;
+    return Math.round(v * 100);
+  }
+  function centsToInput(c) {
+    const s = Math.round(c || 0);
+    const euros = Math.floor(s / 100);
+    const cents = String(s % 100).padStart(2, "0");
+    return `${euros},${cents}`;
+  }
+
+  // ---------- PROFILE VIEW ----------
+  function openProfileView(pid, scope) {
+    show("view_profile");
+    const p = state.profiles[pid];
+    if (!p) return;
+    $("profTitle").innerHTML = `<img class="avatar mid" src="${p.avatarDataUrl || DEFAULT_AVATAR}"> ${p.name}`;
+    // kleine Übersicht: Anzahl Turniere, Runden
+    const myTours = state.tournaments.filter(t => (t.players || []).includes(pid));
+    const roundsCount = myTours.reduce((acc, t) => acc + (t.rounds?.length || 0), 0);
+    $("profSub").textContent = `Teilnahme an ${myTours.length} Turnier(en) · Runden: ${roundsCount}`;
+
+    // Scope füllen
+    const sel = $("profScopeSel");
+    sel.innerHTML = `<option value="all">Gesamt (alle Turniere)</option>` +
+      state.tournaments.map(t => `<option value="${t.id}" ${scope===t.id?'selected':''}>${t.name}</option>`).join('');
+    sel.onchange = () => renderProfileTable(pid, sel.value);
+    renderProfileTable(pid, scope || "all");
+  }
+
+  function renderProfileTable(pid, scope) {
+    const rows = [];
+    state.tournaments.forEach(t => {
+      if (scope !== "all" && scope !== t.id) return;
+      if (!(t.players || []).includes(pid)) return;
+      (t.rounds || []).forEach(r => {
+        const sum = (t.players || []).reduce((a, pp) => a + (+r.chips?.[pp] || 0), 0);
+        const pct = sum ? ((+r.chips?.[pid] || 0) / sum * 100) : 0;
+        const ranks = rankCompetition((t.players || []).map(pp => ({ name: pp, value: +(+r.chips?.[pp] || 0) })));
+        const rank = ranks[pid] || 4;
+        rows.push({
+          date: r.date, tour: t.name, rank, chips: (+r.chips?.[pid] || 0),
+          pct, status: sum === (t.playerCount * t.startChips) ? 'OK' : (sum < (t.playerCount * t.startChips) ? 'Unvollständig' : 'Überschüssig'),
+          stake: r.stakeMode === 'stake',
+          stakeCents: r.stakePerPersonCents || 0,
+          t, r
+        });
+      });
+    });
+    rows.sort((a,b) => (b.date||"").localeCompare(a.date||""));
+
+    const tbody = $("profRows"); tbody.innerHTML = rows.map(r => {
+      return `<tr>
+        <td>${fmtDate(r.date)}</td>
+        <td>${r.tour}${r.stake ? ' <span class="pill warn">€</span>':''}</td>
+        <td>#${r.rank}</td>
+        <td>${r.chips}</td>
+        <td>${fmtPct(r.pct)}%</td>
+        <td>${r.status}</td>
+      </tr>`;
+    }).join('');
+
+    // %Stack Verlauf (Spark)
+    const ser = [...rows].reverse().map(x => x.pct);
+    const pv = $("pv_spark");
+    pv.innerHTML = ser.map(pv => `<span title='${fmtPct(pv)}%' style='flex:1;align-self:flex-end;height:${Math.max(4, Math.min(100, Math.round(pv)))}%'></span>`).join('');
+  }
+
+  // ---------- PDF Export (Profil / Quick-View) ----------
+  async function exportProfilePdf() {
+    await ensurePdfLibs();
+    const { jsPDF } = window.jspdf;
+
+    // Wir rendern A4 (595x842 pt) im Hochformat
+    const doc = new jsPDF({ unit: "pt", format: "a4", compress: true });
+    const pageW = 595, pageH = 842;
+    const margin = 24;
+    let y = margin;
+
+    const p = state.profiles[currentProfileId];
+    if (!p) return;
+
+    // Kopf: Avatar farbig, Name (schwarz), kleine Kennzahlen
+    const img = p.avatarDataUrl || DEFAULT_AVATAR;
+    try {
+      doc.addImage(img, "JPEG", margin, y, 48, 48, undefined, "FAST");
+    } catch {
+      try { doc.addImage(img, "PNG", margin, y, 48, 48, undefined, "FAST"); } catch {}
+    }
+    doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+    doc.text(p.name, margin + 60, y + 20);
+    // Kennzahlen
+    const myTours = state.tournaments.filter(t => (t.players || []).includes(currentProfileId));
+    const roundsCount = myTours.reduce((acc, t) => acc + (t.rounds?.length || 0), 0);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(11);
+    doc.setTextColor(80);
+    doc.text(`Turniere: ${myTours.length} · Runden: ${roundsCount}`, margin + 60, y + 38);
+    y += 60;
+
+    // Tabelle (aktuelle Profilansicht): wir screenshotten den Table-Bereich in Grau
+    const cardEl = qs("#view_profile .card:last-of-type"); // der Tabellen-Card
+    if (cardEl) {
+      // Temporär Grau-Theme erzwingen (CSS schon gray bars)
+      const canvas = await window.html2canvas(cardEl, { backgroundColor: "#ffffff", scale: 2 });
+      const imgData = canvas.toDataURL("image/jpeg", 0.92);
+      const maxW = pageW - margin * 2;
+      const ratio = canvas.width / canvas.height;
+      const w = maxW;
+      const h = w / ratio;
+      if (y + h > pageH - margin) { doc.addPage(); y = margin; }
+      doc.addImage(imgData, "JPEG", margin, y, w, h, undefined, "FAST");
+      y += h + 12;
+    }
+
+    // Footer
+    doc.setDrawColor(200); doc.line(margin, pageH - margin - 18, pageW - margin, pageH - margin - 18);
+    doc.setFontSize(9); doc.setTextColor(120);
+    doc.text("© Brenner · Poker-Stammtisch", margin, pageH - margin);
+
+    doc.save(`poker_${p.name}_quickview_${todayIso()}.pdf`);
+  }
+// =====================
+// Teil 3/3 – Features + Export
+// =====================
+
+// ---------------------
+// Runde bearbeiten
+// ---------------------
+function editRound(tourId, roundId) {
+  const tour = state.tournaments.find(t => t.id === tourId);
+  if (!tour) return;
+  const round = tour.rounds.find(r => r.id === roundId);
+  if (!round) return;
+
+  // Dialog wiederverwenden
+  const dlg = document.getElementById("dlgRound");
+  const form = document.getElementById("roundForm");
+  form.innerHTML = "";
+
+  tour.players.forEach(pid => {
+    const prof = state.profiles.find(p => p.id === pid);
+    const val = round.results[pid] || 0;
+    form.innerHTML += `
+      <label>${prof.name}
+        <input type="number" id="roundInput_${pid}" value="${val}" />
+      </label>`;
   });
+
+  document.getElementById("dlgRoundTitle").textContent = "Runde bearbeiten";
+  dlg.showModal();
+
+  document.getElementById("roundSave").onclick = () => {
+    tour.players.forEach(pid => {
+      const inp = document.getElementById("roundInput_" + pid);
+      round.results[pid] = parseInt(inp.value || 0, 10);
+    });
+    saveState();
+    dlg.close();
+    renderTournament(tourId);
+  };
+
+  document.getElementById("roundCancel").onclick = () => dlg.close();
 }
 
-// ===== Init
-// Buttons zum Datei-Handling ausblenden (wir nutzen Firebase)
-document.getElementById('openBtn')?.classList.add('hidden');
-document.getElementById('saveBtn')?.classList.add('hidden');
+// ---------------------
+// All-Time Übersicht
+// ---------------------
+function showAllTime() {
+  // Spieler auswählen
+  const sel = prompt("IDs der Spieler kommasepariert (z.B. p1,p2,p3). Leer = alle");
+  let players = state.profiles;
+  if (sel && sel.trim().length > 0) {
+    const ids = sel.split(",").map(s => s.trim());
+    players = players.filter(p => ids.includes(p.id));
+  }
 
-document.getElementById('btnLoginProfile').addEventListener('click', showLoginList);
-show('auth');
-rebuildStreaks();
+  // Daten sammeln
+  const stats = players.map(p => {
+    let games = 0, sumChips = 0, sumStack = 0, cashGames = 0, euroBalance = 0;
+    state.tournaments.forEach(t => {
+      t.rounds.forEach(r => {
+        if (r.results[p.id] != null) {
+          games++;
+          sumChips += r.results[p.id];
+          if (t.startChips) {
+            sumStack += r.results[p.id] / (t.startChips * t.players.length);
+          }
+          if (r.euroPerPlayer) {
+            cashGames++;
+            const euro = (r.results[p.id] / (t.startChips * t.players.length)) * r.euroPerPlayer * t.players.length - r.euroPerPlayer;
+            euroBalance += euro;
+          }
+        }
+      });
+    });
+    return {
+      id: p.id,
+      name: p.name,
+      games,
+      avgChips: games > 0 ? (sumChips / games) : 0,
+      avgStack: games > 0 ? (sumStack / games) * 100 : 0,
+      cashGames,
+      euroBalance
+    };
+  });
 
-// Firebase starten, wenn Auth bereit
-if(USE_FIREBASE){
-  // Wir haben in index.html bereits signInAnonymously aufgerufen
-  initCloud();
+  // Sortieren nach %Stack
+  stats.sort((a, b) => b.avgStack - a.avgStack);
+
+  // Tabelle bauen
+  let html = `<h2>All-Time Übersicht</h2>
+    <table class="tbl"><thead><tr>
+      <th>Spieler</th><th>Spiele</th><th>Ø Chips</th><th>Ø %Stack</th><th>Cash Games</th><th>€ Bilanz</th>
+    </tr></thead><tbody>`;
+  stats.forEach(s => {
+    html += `<tr>
+      <td>${s.name}</td>
+      <td>${s.games}</td>
+      <td>${s.avgChips.toFixed(1)}</td>
+      <td>${s.avgStack.toFixed(1)}%</td>
+      <td>${s.cashGames}</td>
+      <td>${s.euroBalance.toFixed(2)} €</td>
+    </tr>`;
+  });
+  html += "</tbody></table>";
+
+  const container = document.querySelector(".container");
+  container.innerHTML = html + `<div style="margin-top:10px">
+    <button class="btn secondary" onclick="renderHome()">← Zurück</button>
+    <button class="btn" onclick="exportPdf('All-Time Übersicht', document.querySelector('.container').innerHTML)">📄 PDF</button>
+  </div>`;
 }
+
+// ---------------------
+// PDF Export mit jsPDF
+// ---------------------
+function exportPdf(title, htmlContent) {
+  import("https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.3/dist/html2canvas.min.js")
+    .then(() => import("https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"))
+    .then(() => {
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF("p", "mm", "a4");
+      doc.html(`<h2>${title}</h2>` + htmlContent, {
+        callback: function (doc) {
+          doc.save(title + ".pdf");
+        },
+        x: 10,
+        y: 10,
+        width: 190
+      });
+    });
+}
+
+// ---------------------
+// Initialisierung
+// ---------------------
+window.addEventListener("load", () => {
+  loadState();
+
+  // Eventlistener binden
+  document.getElementById("btnNewTournament").onclick = () => newTournament();
+  document.getElementById("btnBackHome").onclick = () => renderHome();
+  document.getElementById("btnAllTime").onclick = () => showAllTime();
+  document.getElementById("profBack").onclick = () => renderHome();
+  document.getElementById("profPdf").onclick = () => {
+    const html = document.getElementById("view_profile").innerHTML;
+    exportPdf("Profil Übersicht", html);
+  };
+});
