@@ -15,6 +15,7 @@
          font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;}
     header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #23274d;background:linear-gradient(180deg,#141939,#121634);}
     h1{font-size:18px;margin:0;font-weight:700;letter-spacing:.2px;}
+    .badge{font-size:12px;color:var(--muted)}
     .btn{background:linear-gradient(135deg,var(--accent),#5fb4ff);color:#041224;border:none;padding:9px 12px;border-radius:12px;font-weight:700;box-shadow:0 6px 18px rgba(110,231,255,.15);cursor:pointer}
     .btn.small{ padding:6px 10px; border-radius:10px; font-size:12px }
     .btn.danger{ background:linear-gradient(135deg,#7a2430,#b9313f); color:#fff }
@@ -32,34 +33,19 @@
     .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid #222752;padding:12px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
     .card h3{margin:0 0 4px 0;font-size:16px}
     .sub{font-size:12px;color:var(--muted);}
+    .rankRow{display:flex;align-items:center;justify-content:space-between;margin-top:6px}
     .bar{height:10px;background:var(--chip);border-radius:999px;overflow:hidden;margin-top:8px;}
     .bar>span{display:block;height:100%;background:linear-gradient(90deg,#6ee7ff,#8b5cff);width:0%;transition:width .4s ease}
+    .bar.gray>span{ background:linear-gradient(90deg,#d6d6d6,#888); }
     .avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid #2b2f63;background:#1a1f44;display:inline-block}
     .avatar.big{width:64px;height:64px;border-width:2px}
     .avatar.mid{width:36px;height:36px}
     .avatar.mini{width:20px;height:20px}
     .avatarWrap{ position:relative; display:inline-block }
-    .header-avatar-btn{
-      width:40px; height:40px; border-radius:50%;
-      padding:0; background:transparent; border:1px solid #3a406f; cursor:pointer;
-      display:grid; place-items:center;
-    }
-    .header-avatar-btn img{
-      width:36px; height:36px; border-radius:50%; object-fit:cover; display:block;
-    }
-    footer{margin:20px 0;text-align:center;font-size:12px;color:var(--muted);}
-    @media print {
-      header, .btn, .status, #btnLogout { display:none !important; }
-      body { background:#fff; color:#000; }
-      .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
-      .container { max-width:100%; margin:0; padding:0 8px; }
-      .tbl { border-spacing:0; }
-      .row { background:#fff; border-color:#ccc; }
-    }
     .tbl{width:100%;border-collapse:separate;border-spacing:0 8px;margin-top:12px}
     .row{background:linear-gradient(180deg,var(--panel2),#141939);border:1px solid #222752;border-radius:12px;overflow:hidden}
-    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:#7c4e16}
-    .row.overshoot{background:linear-gradient(180deg,#2a1b24,#2b1420);border-color:#8a2a3b}
+    .row.incomplete{background:linear-gradient(180deg,#2a2230,#2b2117);border-color:var(--orange)}
+    .row.overshoot{background:linear-gradient(180deg,#2a1b24,#2b1420);border-color:var(--red)}
     .row td{padding:10px 8px;border-bottom:1px solid rgba(255,255,255,.03)}
     .row tr:last-child td{border-bottom:none}
     .footerFlex{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
@@ -69,18 +55,44 @@
     .modal h2{margin:0 0 8px 0;font-size:18px}
     .form{display:grid;gap:10px}
     .form label{font-size:12px;color:var(--muted)}
-    .form input[type="date"], .form input[type="number"], .form input[type="password"], .form input[type="text"], .form input[type="file"], .form select{width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text)}
+    .form input[type="date"], .form input[type="number"], .form input[type="password"], .form input[type="text"], .form input[type="file"], .form select{
+      width:100%;padding:8px 10px;border-radius:10px;border:1px solid #293062;background:#0e1230;color:var(--text);font-size:16px; /* iOS: kein Zoom */
+    }
     .grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
     .hidden{display:none}
     .ok{color:var(--good)}
     .bad{color:var(--bad)}
+    .header-avatar-btn{
+      width:40px; height:40px; border-radius:50%;
+      padding:0; background:transparent; border:1px solid #3a406f; cursor:pointer;
+      display:grid; place-items:center;
+    }
+    .header-avatar-btn img{
+      width:36px; height:36px; border-radius:50%; object-fit:cover; display:block;
+    }
+
+    /* All-Time Ergebnis Tabelle bündig */
+    .tbl.at thead th, .tbl.at tbody td{ padding:10px 14px; }
+    .tbl.at .al-left{ text-align:left; }
+    .tbl.at .al-right{ text-align:right; }
+    .tbl.at thead th{ font-weight:700; color:#dce3ff; }
+
+    footer{margin:20px 0;text-align:center;font-size:12px;color:var(--muted);}
+    @media print {
+      header, .btn, .status, #btnLogout { display:none !important; }
+      body { background:#fff; color:#000; }
+      .card { box-shadow:none; border:1px solid #ccc; background:#fff; }
+      .container { max-width:100%; margin:0; padding:0 8px; }
+      .tbl { border-spacing:0; }
+      .row { background:#fff; border-color:#ccc; }
+    }
   </style>
 </head>
 <body>
   <header>
     <div><h1>Poker-Stammtisch</h1></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-      <!-- Header-Profil (nur nach Login sichtbar) -->
+      <!-- Header-Profil – wird NUR nach Login gezeigt -->
       <button id="btnHeaderProfile" title="Profil & Quick-View" class="header-avatar-btn hidden">
         <img id="headerAvatar" alt="Profil" />
       </button>
@@ -175,14 +187,14 @@
             <div class="sub" id="profSub"></div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <select id="profScopeSel"><option value="all">Gesamt</option></select>
+            <select id="profScopeSel"><option value="all">Gesamt (alle Turniere)</option></select>
             <button class="btn" id="profPdf">📄 PDF</button>
             <button class="btn secondary" id="profBack">← Zurück</button>
           </div>
         </div>
       </div>
       <div class="card" style="margin-top:10px">
-        <div class="bar" style="height:40px"><div id="pv_spark" style="display:flex;height:100%;gap:3px"></div></div>
+        <div class="bar gray" style="height:40px"><div id="pv_spark" style="display:flex;height:100%;gap:3px"></div></div>
         <div class="sub">%Stack Verlauf</div>
       </div>
       <div class="card" style="margin-top:10px">
@@ -196,7 +208,36 @@
     </section>
   </div>
 
-  <!-- DIALOGE (Modals) -->
+  <!-- All-Time Ergebnis (eigener Dialog) -->
+  <dialog id="dlgAllTimeResult">
+    <div class="modal" id="at_result_card">
+      <h2>All-Time – Ergebnis</h2>
+      <div class="sub" id="at_header">Sortiert nach …</div>
+      <div class="card" style="margin-top:10px">
+        <table class="tbl at" style="margin-top:0; width:100%">
+          <thead>
+            <tr>
+              <th class="al-left">Spieler</th>
+              <th class="al-right">Spiele</th>
+              <th class="al-right">Ø Chips</th>
+              <th class="al-right">Ø %Stack</th>
+              <th class="al-right">€ Bilanz</th>
+            </tr>
+          </thead>
+          <tbody id="at_rows"></tbody>
+        </table>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn" id="atResPdf">📄 PDF</button>
+        <button class="btn secondary" id="atResBack">← Übersicht</button>
+        <button class="btn ghost" id="atResClose">Schließen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <footer>© Brenner</footer>
+
+  <!-- ====== DIALOGE (Modals) – müssen vorhanden sein ====== -->
   <dialog id="dlgTournament">
     <div class="modal">
       <h2>Turnier erstellen</h2>
@@ -224,15 +265,24 @@
     <div class="modal">
       <h2 id="dlgRoundTitle">Neue Runde</h2>
       <div id="roundForm" class="form"></div>
-      <div class="grid2">
+      <div class="grid2" style="margin-top:6px">
+        <label>Modus
+          <select id="r_stake">
+            <option value="none">Ohne Einsatz</option>
+            <option value="with">Mit Einsatz</option>
+          </select>
+        </label>
+        <label id="stakeEuroWrap" style="display:none">Einsatz pro Person (€)
+          <input type="text" id="r_stake_euro" placeholder="##,##">
+        </label>
+      </div>
+      <div class="grid2" style="margin-top:6px">
         <label>Dauer (Minuten)
           <input type="number" id="r_duration" min="0" step="1" placeholder="z. B. 45" />
         </label>
-        <label>Kommentar
-          <input type="text" id="r_comment" placeholder="kurze Notiz …" />
-        </label>
+        <!-- Kommentar auf Wunsch entfernt -->
       </div>
-      <div id="sumHint" class="sub">Summe: 0</div>
+      <div id="sumHint" class="sub" style="margin-top:4px">Summe: 0</div>
       <div class="modalFooter" style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
         <button class="btn secondary" id="roundCancel">Abbrechen</button>
         <button class="btn" id="roundSave">Speichern</button>
@@ -323,13 +373,12 @@
     </div>
   </dialog>
 
-  <footer>© Brenner</footer>
-
-  <!-- Firebase -->
+  <!-- Firebase (Compat) -->
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-database-compat.js"></script>
   <script>
+    /* Deine Projekt-Daten (wie besprochen) */
     const firebaseConfig = {
       apiKey: "AIzaSyBDl3rpU3GjTb_c9rzzHQ04FCMAsBPVbYg",
       authDomain: "poker-2c3c6.firebaseapp.com",
@@ -341,6 +390,8 @@
     };
     firebase.initializeApp(firebaseConfig);
   </script>
+
+  <!-- Deine App-Logik -->
   <script src="app.js"></script>
 </body>
 </html>
