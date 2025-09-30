@@ -1,5 +1,5 @@
 /* ===========================================================
-   Poker-Stammtisch – Firebase Edition (vollständig, Fixes)
+   Poker-Stammtisch – Firebase Edition (Streak + RoundCards)
    =========================================================== */
 
 /* ---------- DOM Shortcuts ---------- */
@@ -12,6 +12,7 @@ const todayIso = ()=> new Date().toISOString().slice(0,10);
 const clamp = (n,min,max)=> Math.max(min, Math.min(max,n));
 const uid = (p="id")=> `${p}_${Date.now()}_${Math.floor(Math.random()*1e6)}`;
 const fmtDate = iso=>{ if(!iso) return "—"; const [y,m,d]=iso.split("-"); return `${d}.${m}.${y}`; };
+const sum = arr => arr.reduce((a,b)=>a+b,0);
 
 /* ---------- SHA-256 (Passwort) ---------- */
 async function sha256Hex(str){
@@ -38,11 +39,11 @@ let roomId = "stammtisch";
 let dbRef  = null;
 
 let state = {
-  version: 10,
+  version: 12,
   profiles: [],
   tournaments: [],
   preferences: {},
-  profilePrefs: {}
+  profilePrefs: {},   // streakWeek per Profil
 };
 
 let currentProfileId = null;
@@ -76,7 +77,7 @@ function save(){ if(dbRef) dbRef.set(state); }
    =========================================================== */
 function normalize(d){
   return {
-    version: d?.version || 10,
+    version: d?.version || 12,
     profiles: Array.isArray(d?.profiles)? d.profiles: [],
     tournaments: Array.isArray(d?.tournaments)? d.tournaments: [],
     preferences: d?.preferences || {},
@@ -84,7 +85,7 @@ function normalize(d){
   };
 }
 function migrate(d){
-  d.version = 10;
+  d.version = 12;
   d.profiles.forEach(p=>{
     p.id = p.id || uid("p");
     if(!p.avatarDataUrl) p.avatarDataUrl = genDefaultAvatar(p.name||"");
@@ -108,7 +109,9 @@ function migrate(d){
   });
   if(!d.profilePrefs) d.profilePrefs = {};
   d.profiles.forEach(p=>{
-    if(!d.profilePrefs[p.id]) d.profilePrefs[p.id] = { streakWeek: {0:false,1:true,2:true,3:true,4:true,5:false,6:false} };
+    if(!d.profilePrefs[p.id]) d.profilePrefs[p.id] = {
+      streakWeek: {0:false,1:true,2:true,3:true,4:true,5:false,6:false}
+    };
   });
   return d;
 }
@@ -128,14 +131,8 @@ function show(view){
   $("view_tournament").classList.toggle("hidden", view!=="tournament");
   $("view_profile").classList.toggle("hidden", view!=="profile");
 
-  // Header-Avatar nur zeigen, wenn eingeloggt
-  const btn=$("btnHeaderProfile"), img=$("headerAvatar");
-  if(view==="auth" || !currentProfileId){
-    btn?.classList.add("hidden");
-    if(img) img.src="";
-  }else{
-    showHeaderAvatar(currentProfileId);
-  }
+  if(view==="auth"){ $("btnHeaderProfile")?.classList.add("hidden"); }
+  else if(currentProfileId){ showHeaderAvatar(currentProfileId); }
 
   if(view==="auth") renderAuth();
   if(view==="home") renderHome();
@@ -148,6 +145,12 @@ function showHeaderAvatar(pid){
   const btn=$("btnHeaderProfile"), img=$("headerAvatar"); if(!btn||!img) return;
   img.src = p.avatarDataUrl||genDefaultAvatar(p.name);
   btn.classList.remove("hidden");
+
+  // Streak-Badge
+  btn.querySelector(".streakBadge")?.remove();
+  const s = computeStreak(pid);
+  if(s>0){ const b=document.createElement("span"); b.className="streakBadge"; b.textContent=String(s); btn.appendChild(b); btn.title=`Streak: ${s}`; }
+
   btn.onclick = ()=> openProfileView(pid, curTournamentId ? "tour" : "all");
 }
 
@@ -163,9 +166,6 @@ $("linkRegister").addEventListener("click",(e)=>{ e.preventDefault(); openProfil
 $("linkOtherProfile").addEventListener("click",(e)=>{ e.preventDefault(); showLoginList(); });
 
 function renderAuth(){
-  // Header-Avatar im Auth-Screen immer versteckt
-  $("btnHeaderProfile")?.classList.add("hidden");
-
   // großer Kreis -> gemerktes Profilbild
   const remembered = localStorage.getItem("pst_lastProfile");
   const btn = $("btnLoginProfile");
@@ -176,7 +176,7 @@ function renderAuth(){
     } else btn.textContent="👥";
   } else btn.textContent="👥";
 
-  // Kartenliste
+  // Kartenliste (zunächst leer/hidden – erst per Link sichtbar)
   const grid=$("authList"); grid.innerHTML="";
   state.profiles.forEach(p=>{
     const card=document.createElement("div"); card.className="card";
@@ -188,7 +188,6 @@ function renderAuth(){
       </div>`;
     grid.appendChild(card);
   });
-  grid.style.display = state.profiles.length ? "grid":"none";
   grid.querySelectorAll("[data-login]").forEach(b=> b.addEventListener("click", ()=> loginFlow(b.getAttribute("data-login"))));
 }
 function showLoginList(){ $("authList").style.display="grid"; }
@@ -207,7 +206,7 @@ async function loginFlow(pid){
 }
 
 /* ===========================================================
-   PROFILE – erstellen/bearbeiten
+   PROFILE – erstellen/bearbeiten (inkl. Streak)
    =========================================================== */
 const dlgProf=$("dlgProfileEdit");
 function openProfileEdit(pid){
@@ -217,11 +216,7 @@ function openProfileEdit(pid){
   $("profName").value = p.name||"";
   $("lblProfPwCurrent").style.display = (isEdit && p.pwHash)? "":"none";
   $("profPwCurrent").value=""; $("profPwNew1").value=""; $("profPwNew2").value="";
-
-  const prev=$("profAvatarPreview");
-  prev.innerHTML = `<span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span>`;
-  prev.dataset.url="";
-
+  const prev=$("profAvatarPreview"); prev.innerHTML = `<span class="avatarWrap"><img class="avatar big" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span>`; prev.dataset.url="";
   const file=$("profAvatar"); file.value="";
   file.onchange=()=>{
     const f=file.files[0]; if(!f) return;
@@ -237,40 +232,42 @@ function openProfileEdit(pid){
     }; r.readAsDataURL(f);
   };
 
+  // Streak-Tage laden
+  const week = (state.profilePrefs[p.id]?.streakWeek) || {0:false,1:true,2:true,3:true,4:true,5:false,6:false};
+  qsa('#streakPrefs input[type="checkbox"]').forEach(cb=> cb.checked = !!week[+cb.dataset.dow]);
+
   dlgProf.showModal();
   $("profCancel").onclick=()=> dlgProf.close();
   $("profSave").onclick=async ()=>{
     const name=$("profName").value.trim(); if(!name) return alert("Name fehlt");
     const cur=$("profPwCurrent").value; const n1=$("profPwNew1").value; const n2=$("profPwNew2").value;
     let newHash=p.pwHash||null;
-
     if(isEdit){
       if(n1||n2){
         if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein");
-        if(p.pwHash){
-          if(!cur) return alert("Aktuelles Passwort fehlt");
-          const h=await sha256Hex(cur); if(h!==p.pwHash) return alert("Aktuelles Passwort falsch");
-        }
+        if(p.pwHash){ if(!cur) return alert("Aktuelles Passwort fehlt"); const h=await sha256Hex(cur); if(h!==p.pwHash) return alert("Aktuelles Passwort falsch"); }
         if(n1 && n1.length<4) return alert("Neues Passwort zu kurz (≥4)");
         newHash=n1? await sha256Hex(n1): null;
       }
       p.name=name; p.pwHash=newHash; p.avatarDataUrl = prev.dataset.url || p.avatarDataUrl || genDefaultAvatar(name);
     }else{
-      if(n1||n2){
-        if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein");
-        if(n1.length<4) return alert("Neues Passwort zu kurz (≥4)");
-        newHash=await sha256Hex(n1);
-      }
+      if(n1||n2){ if(n1!==n2) return alert("Neue Passwörter stimmen nicht überein"); if(n1.length<4) return alert("Neues Passwort zu kurz (≥4)"); newHash=await sha256Hex(n1); }
       const np={id:uid("p"), name, pwHash:newHash, avatarDataUrl: prev.dataset.url || genDefaultAvatar(name)};
       state.profiles.push(np); currentProfileId=np.id;
     }
+
+    // Streak-Tage speichern
+    const targetId = isEdit? p.id : currentProfileId;
+    if(!state.profilePrefs[targetId]) state.profilePrefs[targetId]={};
+    const w={}; qsa('#streakPrefs input[type="checkbox"]').forEach(cb=> w[+cb.dataset.dow]=cb.checked);
+    state.profilePrefs[targetId].streakWeek = w;
+
     save(); dlgProf.close(); show("home"); alert("Profil gespeichert.");
   };
 }
 $("btnLogout").addEventListener("click", ()=>{
   currentProfileId=null; curTournamentId=null;
   $("btnHeaderProfile").classList.add("hidden");
-  const img=$("headerAvatar"); if(img) img.src="";
   show("auth");
 });
 
@@ -343,11 +340,11 @@ function computeTournamentInfo(t){
   if(!t||!t.rounds?.length){ return {last:null, hasIncomplete:false, hasOvershoot:false, total:t.playerCount*t.startChips}; }
   const sorted=[...t.rounds].sort((a,b)=> (b.date||"").localeCompare(a.date||""));
   const last=sorted[0];
-  const sum=(t.players||[]).reduce((a,p)=> a+(+last.chips?.[p]||0),0);
+  const sumRound=(t.players||[]).reduce((a,p)=> a+(+last.chips?.[p]||0),0);
   const total=t.playerCount*t.startChips;
   const hasIncomplete = t.rounds.some(r=> (t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0) < total);
   const hasOvershoot =  t.rounds.some(r=> (t.players||[]).reduce((a,p)=> a+(+r.chips?.[p]||0),0) > total);
-  return { last:{sum,total}, hasIncomplete, hasOvershoot, total };
+  return { last:{sum:sumRound,total}, hasIncomplete, hasOvershoot, total };
 }
 
 function renderTournament(tid){
@@ -361,9 +358,9 @@ function renderTournament(tid){
   const info=computeTournamentInfo(t);
   const ss=$("sumState");
   if(info.last){
-    const {sum,total}=info.last; const isC=sum===total;
-    ss.textContent = isC? `Letzte Runde: ${sum} / ${total}` : `Letzte Runde: ${sum} / ${total} · ${sum<total? 'unvollständig':'überschüssig'}`;
-    ss.className='pill '+(isC?'good': (sum<total?'warn':'bad'));
+    const {sum:sr,total}=info.last; const isC=sr===total;
+    ss.textContent = isC? `Letzte Runde: ${sr} / ${total}` : `Letzte Runde: ${sr} / ${total} · ${sr<total? 'unvollständig':'überschüssig'}`;
+    ss.className='pill '+(isC?'good': (sr<total?'warn':'bad'));
   } else { ss.textContent='Letzte Runde: —'; ss.className='pill'; }
   $("flagIncomplete").style.display = info.hasIncomplete? '': 'none';
   $("flagOvershoot").style.display  = info.hasOvershoot?  '': 'none';
@@ -386,85 +383,64 @@ function renderLeaderboard(t){
   order.forEach((pid,i)=>{
     const p=state.profiles.find(x=>x.id===pid);
     const card=document.createElement("div"); card.className="card"; card.style.cursor="pointer";
-    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":""; const pct=clamp(avgPct[pid],0,100);
+    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":""; 
     card.innerHTML = `<h3>${medal? medal+" ":""}<img class="avatar mini" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"> ${p.name}</h3>
       <div class="sub">Ø Chips: <b>${Math.round(avgChips[pid])}</b> · Ø %Stack: <b>${avgPct[pid].toFixed(1)}</b>%</div>
-      <div class="bar gray"><span style="width:${pct}%"></span></div>`;
+      <div class="bar gray"><span style="width:${clamp(avgPct[pid],0,100)}%"></span></div>`;
     card.onclick=()=> openProfileView(pid, "tour");
     leader.appendChild(card);
   });
 }
 
-/* ---------- Rundenliste ---------- */
+/* ---------- Rundenliste als große Karten ---------- */
+function rankCompetition(items){ const s=[...items].sort((a,b)=> b.value-a.value); let rank=0,seen=0,prev=Infinity; const map={}; for(const it of s){ seen++; if(it.value!==prev){ rank=seen; prev=it.value;} map[it.name]=rank; } return map; }
+
 function renderRounds(t){
-  const tbody=$("roundsBody"); tbody.innerHTML="";
+  const wrap=$("roundsList"); wrap.innerHTML="";
   const rounds=[...t.rounds].sort((a,b)=> (b.date||"").localeCompare(a.date||""));
   const targetTotal=t.playerCount*t.startChips;
 
   rounds.forEach(r=>{
-    const sum=(t.players||[]).reduce((acc,pid)=> acc+(+r.chips?.[pid]||0),0);
-    const isC=sum===targetTotal; const isUnder=sum<targetTotal;
-    const rowClass = (r.euroPerPersonCents!=null) ? "row overshoot" : (isC? "row": (isUnder? "row incomplete":"row overshoot"));
-
+    const sumRound=(t.players||[]).reduce((acc,pid)=> acc+(+r.chips?.[pid]||0),0);
+    const isC=sumRound===targetTotal; const isUnder=sumRound<targetTotal;
     const ranks = rankCompetition((t.players||[]).map(pid=> ({name:pid, value:+(r.chips?.[pid]||0)})));
     const order=(t.players||[]).slice().sort((a,b)=> ranks[a]-ranks[b]);
 
-    const inner=document.createElement("table"); inner.style.width="100%";
-    let html="";
-    const first=order[0];
-    const pctFirst = sum? ((+r.chips?.[first]||0)/sum*100):0;
-    const stakeBadge = r.euroPerPersonCents!=null? ` <span class="pill" style="margin-left:6px">💰 ${(r.euroPerPersonCents/100).toFixed(2)} €</span>`:"";
-    const durBadge = (r.durationMin && r.durationMin>0)? ` <span class="pill" style="margin-left:6px">⏱ ${r.durationMin} min</span>`:"";
+    const card=document.createElement("div"); card.className="roundCard";
+    const head=document.createElement("div"); head.className="roundHead";
+    head.innerHTML = `<span class="date">${fmtDate(r.date)}</span>
+      <span class="meta">${r.durationMin? `⏱ ${r.durationMin} min`:""}${r.euroPerPersonCents!=null? ` · 💰 ${(r.euroPerPersonCents/100).toFixed(2)} €`:""}</span>`;
+    card.appendChild(head);
 
-    html+=`
-      <tr>
-        <td style="min-width:120px;padding:0 8px 8px 8px" rowspan="${order.length}">
-          <b>${fmtDate(r.date)}</b>${stakeBadge}${durBadge}
-        </td>
-        <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[first]}</td>
-        <td style="padding:0 8px 4px 8px">${state.profiles.find(p=>p.id===first)?.name||"?"}</td>
-        <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[first]||0}</b> · ${pctFirst.toFixed(1)}%</span></td>
-      </tr>`;
-    for(let i=1;i<order.length;i++){
-      const pid=order[i]; const pct=sum? ((+r.chips?.[pid]||0)/sum*100):0;
-      html+=`
-        <tr>
-          <td style="min-width:150px;padding:0 8px 4px 8px">#${ranks[pid]}</td>
-          <td style="padding:0 8px 4px 8px">${state.profiles.find(p=>p.id===pid)?.name||"?"}</td>
-          <td style="min-width:260px;padding:0 8px 4px 8px"><span class="sub"><b>${r.chips?.[pid]||0}</b> · ${pct.toFixed(1)}%</span></td>
-        </tr>`;
-    }
+    order.forEach(pid=>{
+      const pct = sumRound? ((+r.chips?.[pid]||0)/sumRound*100):0;
+      const row=document.createElement("div"); row.className="roundRow";
+      row.innerHTML = `<div>#${ranks[pid]}</div>
+        <div>${state.profiles.find(p=>p.id===pid)?.name||"?"}</div>
+        <div class="sub"><b>${r.chips?.[pid]||0}</b> · ${pct.toFixed(1)}%</div>`;
+      card.appendChild(row);
+    });
+
+    const foot=document.createElement("div"); foot.className="roundFoot";
     const commentStr = r.comment ? ("• "+r.comment) : ((r.comments&&r.comments[0]?.text) ? "• "+r.comments[0].text : "—");
-    html += `
-      <tr>
-        <td colspan="4" style="padding:6px 8px 10px">
-          <div class="footerFlex">
-            <div class="${isC?'ok': (isUnder?'':'bad')}">Rundensumme: <b>${sum}</b> / ${targetTotal} · ${isC? '✓ OK': (isUnder? '✗ Unvollständig':'✗ Überschüssig')}</div>
-            <div class="sub" style="flex:1">Kommentar: ${commentStr}</div>
-            <div>
-              <button class="btn small ghost" data-edit-id="${r.id}">Bearbeiten</button>
-              <button class="btn small ghost" data-cmt-id="${r.id}">Kommentar</button>
-              <button class="btn small danger" data-del-id="${r.id}">Löschen</button>
-            </div>
-          </div>
-        </td>
-      </tr>`;
-    inner.innerHTML=html;
-    const tr=document.createElement("tr"); tr.className=rowClass; const td=document.createElement("td"); td.colSpan=4; td.appendChild(inner); tr.appendChild(td); tbody.appendChild(tr);
+    const sumCls = isC? 'sumOK' : (isUnder? 'sumWarn':'sumBad');
+    foot.innerHTML = `
+      <div class="sub">Kommentar: ${commentStr}</div>
+      <div class="${sumCls} sub">Summe: <b>${sumRound}</b> / ${targetTotal} · ${isC? '✓ OK': (isUnder? '✗ Unvollständig':'✗ Überschüssig')}</div>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button class="btn small ghost" data-edit-id="${r.id}">Bearbeiten</button>
+        <button class="btn small ghost" data-cmt-id="${r.id}">Kommentar</button>
+        <button class="btn small danger" data-del-id="${r.id}">Löschen</button>
+      </div>`;
+    card.appendChild(foot);
+
+    wrap.appendChild(card);
   });
 
   qsa("[data-edit-id]").forEach(b=> b.addEventListener("click", ()=> openRoundEdit(t.id, b.getAttribute("data-edit-id"))));
   qsa("[data-del-id]").forEach(b=> b.addEventListener("click", ()=> deleteRound(t.id, b.getAttribute("data-del-id"))));
   qsa("[data-cmt-id]").forEach(b=> b.addEventListener("click", ()=> openComment(t.id, b.getAttribute("data-cmt-id"))));
 }
-
-function rankCompetition(items){
-  const s=[...items].sort((a,b)=> b.value-a.value);
-  let rank=0,seen=0,prev=Infinity; const map={};
-  for(const it of s){ seen++; if(it.value!==prev){ rank=seen; prev=it.value;} map[it.name]=rank; }
-  return map;
-}
-
 /* ---------- Runden CRUD ---------- */
 const dlgRound=$("dlgRound"), formRound=$("roundForm"), sumHint=$("sumHint");
 function openRoundEdit(tid, rid){
@@ -476,7 +452,7 @@ function openRoundEdit(tid, rid){
   formRound.insertAdjacentHTML("beforeend", `<label>Datum<input type="date" id="r_date" value="${r.date}"></label>`);
 
   // Chips-Inputs
-  const grid=document.createElement("div"); grid.className="grid2";
+  const grid=document.createElement("div"); grid.className="grid"; grid.style.gridTemplateColumns="repeat(2,1fr)"; grid.style.gap="10px";
   (t.players||[]).forEach(pid=>{
     const name= state.profiles.find(p=>p.id===pid)?.name||"?";
     const val = +r.chips?.[pid]||0;
@@ -490,10 +466,9 @@ function openRoundEdit(tid, rid){
   });
   formRound.appendChild(grid);
 
-  // Modus + Einsatz + Dauer (einheitlich, blau)
-  const meta=document.createElement("div");
-  meta.className="grid2";
-  meta.innerHTML = `
+  // Einsatz + Dauer
+  const wrap=document.createElement("div"); wrap.className="grid"; wrap.style.gridTemplateColumns="repeat(2,1fr)"; wrap.style.gap="10px";
+  wrap.innerHTML=`
     <label>Modus
       <select id="r_stake">
         <option value="none">Ohne Einsatz</option>
@@ -503,17 +478,10 @@ function openRoundEdit(tid, rid){
     <label id="stakeEuroWrap" style="display:none">Einsatz pro Person (€)
       <input type="text" id="r_stake_euro" placeholder="##,##" value="${r.euroPerPersonCents!=null? (r.euroPerPersonCents/100).toFixed(2).replace('.',','): ''}">
     </label>
-  `;
-  formRound.appendChild(meta);
-
-  const dur=document.createElement("div");
-  dur.className="grid2";
-  dur.innerHTML = `
     <label>Dauer (Minuten)
-      <input type="number" id="r_duration" min="0" step="1" placeholder="z. B. 45" value="${r.durationMin||0}">
-    </label>
-  `;
-  formRound.appendChild(dur);
+      <input type="number" id="r_duration" min="0" step="1" value="${r.durationMin||0}" />
+    </label>`;
+  formRound.appendChild(wrap);
 
   const stakeSel=$("r_stake"), euroInp=$("r_stake_euro"), stakeEuroWrap=$("stakeEuroWrap");
   stakeSel.value = (r.euroPerPersonCents!=null)? "with":"none";
@@ -521,47 +489,28 @@ function openRoundEdit(tid, rid){
   stakeSel.onchange = ()=> stakeEuroWrap.style.display = (stakeSel.value==="with")? "":"none";
 
   function updateSumHint(){
-    const sum=(t.players||[]).reduce((a,p)=> a+(+formRound.querySelector(`[data-chip="${p}"]`).value||0),0);
+    const s=(t.players||[]).reduce((a,p)=> a+(+formRound.querySelector(`[data-chip="${p}"]`).value||0),0);
     const target=t.playerCount*t.startChips;
-    const diff=target-sum;
-    sumHint.textContent = diff===0? `✓ Alles gut — Summe: ${sum} / ${target}` : (diff>0? `Es fehlen noch ${diff} Chips — Summe: ${sum} / ${target}` : `${-diff} Chips zu viel — Summe: ${sum} / ${target}`);
+    const diff=target-s;
+    sumHint.textContent = diff===0? `✓ Alles gut — Summe: ${s} / ${target}` : (diff>0? `Es fehlen noch ${diff} Chips — Summe: ${s} / ${target}` : `${-diff} Chips zu viel — Summe: ${s} / ${target}`);
     sumHint.style.color = diff===0? 'var(--good)': (diff>0? '#ffd79c':'#ffb2b2');
   }
   updateSumHint();
 
   dlgRound.showModal();
   $("roundCancel").onclick=()=> dlgRound.close();
-
-  $("roundSave").onclick = () => {
+  $("roundSave").onclick=()=>{
     const date = $("r_date").value || todayIso();
-
-    // Chips sauber einsammeln (wichtig: KEIN Zeilenumbruch in den Template-Strings)
-    const chips = {};
-    (t.players || []).forEach(pid => {
-      const el = formRound.querySelector(`[data-chip="${pid}"]`);
-      chips[pid] = +(el?.value || 0);
-    });
-
-    let euroPerPersonCents = null;
-    if (stakeSel.value === "with") {
-      let txt = (euroInp.value || "").replace(".", ",");
-      if (txt.includes(",")) {
-        const [a, b = "0"] = txt.split(",");
-        txt = `${a}.${b.padEnd(2, "0").slice(0, 2)}`;
-      }
-      const euro = parseFloat(txt) || 0;
-      euroPerPersonCents = Math.round(euro * 100);
+    const chips = {}; (t.players||[]).forEach(pid=> chips[pid]= +(formRound.querySelector(`[data-chip="${pid}"]`).value||0));
+    let euroPerPersonCents=null;
+    if(stakeSel.value==="with"){
+      let txt=(euroInp.value||"").replace(".",",");
+      if(txt.includes(",")){ const [a,b="0"]=txt.split(","); txt = `${a}.${b.padEnd(2,"0").slice(0,2)}`; }
+      const euro=parseFloat(txt)||0; euroPerPersonCents = Math.round(euro*100);
     }
-
     const durationMin = Math.max(0, +$("r_duration").value || 0);
-    const obj = { id: rid || uid("r"), date, chips, comments:r.comments||[], euroPerPersonCents, durationMin, comment: r.comment||"" };
-
-    if (rid) {
-      const i = t.rounds.findIndex(x => x.id === rid);
-      if (i >= 0) t.rounds[i] = obj;
-    } else {
-      t.rounds.push(obj);
-    }
+    const obj = { id: rid||uid("r"), date, chips, comments:r.comments||[], euroPerPersonCents, durationMin, comment: r.comment||"" };
+    if(rid){ const i=t.rounds.findIndex(x=> x.id===rid); if(i>=0) t.rounds[i]=obj; } else t.rounds.push(obj);
     save(); dlgRound.close(); render("tournament");
   };
 }
@@ -603,6 +552,7 @@ function openTourSettings(){
   dlgSet.showModal();
   $("setCancel").onclick=()=> dlgSet.close();
   $("setSave").onclick=()=>{
+    const t=state.tournaments.find(x=> x.id===curTournamentId); if(!t) return;
     t.startChips=Math.max(1,+$("setStartChips").value||t.startChips);
     t.playerCount=Math.max(2,+$("setPlayerCount").value||t.playerCount);
     t.admins=[...wrap.querySelectorAll("input:checked")].map(i=> i.value);
@@ -611,149 +561,325 @@ function openTourSettings(){
 }
 
 /* ===========================================================
-   PROFIL-QUICK-VIEW (Drucken statt PDF)
+   PROFIL-QUICK-VIEW (mit Druck & KPI-Zeilen)
    =========================================================== */
 $("profBack").addEventListener("click", ()=> show("home"));
 $("profPrint").addEventListener("click", ()=> window.print());
+$("profEdit").addEventListener("click", ()=> { if(currentProfileId) openProfileEdit(currentProfileId); });
 
 function openProfileView(pid, scopeDefault="all"){
   show("profile");
-  const p = state.profiles.find(x=> x.id===pid); if(!p) return;
-  $("profTitle").innerHTML = `<span class="avatarWrap"><img class="avatar mid" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span> ${p.name}`;
+  const p = state.profiles.find(x=> x.id===pid); 
+  if(!p) return;
 
+  // Profil-Titel + Avatar
+  $("profTitle").innerHTML = `<span class="avatarWrap"><img class="avatar mid" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span> ${p.name}`;
+  
+  // Streak-Badge im Profil
+  const wrap=$("profTitle").querySelector(".avatarWrap");
+  wrap.querySelector(".streakBadge")?.remove();
+  const s=computeStreak(pid); 
+  if(s>0){ 
+    const b=document.createElement("span"); 
+    b.className="streakBadge"; 
+    b.textContent=String(s); 
+    wrap.appendChild(b); 
+  }
+
+  // Profil bearbeiten-Button nur für eingeloggten Spieler und nur im Profil-View
+  if(pid === currentProfileId && scopeDefault === "all"){
+    $("profEdit").style.display = "";
+  } else {
+    $("profEdit").style.display = "none";
+  }
+
+  // Dropdown für Scope
   const sel=$("profScopeSel");
-  sel.innerHTML = `<option value="all"${scopeDefault==="all"?" selected":""}>Gesamt (alle Turniere)</option>` + state.tournaments.map(t=> `<option value="${t.id}"${(scopeDefault==="tour" && t.id===curTournamentId)?" selected":""}>${t.name}</option>`).join("");
+  sel.innerHTML = `<option value="all"${scopeDefault==="all"?" selected":""}>Gesamt (alle Turniere)</option>` + 
+    state.tournaments.map(t=> `<option value="${t.id}"${(scopeDefault==="tour" && t.id===curTournamentId)?" selected":""}>${t.name}</option>`).join("");
   sel.onchange=()=> renderProfile(pid, sel.value);
+
   renderProfile(pid, sel.value);
 }
 
-function renderProfile(pid, scope){
+
+function renderProfileKpis(pid){
+  // aggregieren über alle Turniere
+  const rounds = collectPlayerRounds(pid);
+  const games = rounds.length;
+  const chipsAvg = games? Math.round(sum(rounds.map(r=> r.myChips))/games) : 0;
+  const pctAvg   = games? (sum(rounds.map(r=> r.myPct))/games) : 0;
+  const medals = countMedals(rounds);
+  const euroSum = sum(rounds.map(r=> r.euroPerPersonCents||0))/100;
+  const mins = sum(rounds.map(r=> r.durationMin||0));
+
+  const k = $("profMeta");
+  k.innerHTML = `
+    <div class="row sub">Runden: <b>${games}</b></div>
+    <div class="row sub">Ø Chips: <b>${chipsAvg}</b> · Ø %Stack: <b>${pctAvg.toFixed(1)}%</b></div>
+    <div class="row sub">🥇 <b>${medals.gold}</b> · 🥈 <b>${medals.silver}</b> · 🥉 <b>${medals.bronze}</b> · 🗑️ <b>${medals.trash}</b></div>
+    <div class="row sub">💰 <b>${euroSum.toFixed(2)} €</b> (Summe) · ⏱ <b>${mins}</b> min</div>`;
+}
+
+function collectPlayerRounds(pid){
   const rows=[];
   state.tournaments.forEach(t=>{
+    if(!(t.players||[]).includes(pid)) return;
+    (t.rounds||[]).forEach(r=>{
+      const sumRound=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
+      const my=+r.chips?.[pid]||0;
+      const pct=sumRound? (my/sumRound*100):0;
+      const ranks=rankCompetition((t.players||[]).map(pp=> ({name:pp, value:+(r.chips?.[pp]||0)})));
+      rows.push({t, r, myChips:my, myPct:pct, rank:ranks[pid], euroPerPersonCents:r.euroPerPersonCents||0, durationMin:r.durationMin||0});
+    });
+  });
+  return rows.sort((a,b)=> (b.r.date||"").localeCompare(a.r.date||""));
+}
+function countMedals(rows){
+  let g=0,s=0,b=0,x=0;
+  rows.forEach(row=>{
+    if(row.rank===1) g++; else if(row.rank===2) s++; else if(row.rank===3) b++; else x++;
+  });
+  return {gold:g,silver:s,bronze:b,trash:x};
+}
+
+function renderProfile(pid, scope){
+  // --- 1) Runden einsammeln und nach Turnier gruppieren ---
+  const blocks = []; // [{tourId, tourName, rows:[...]}]
+  const pushRow = (t, row) => {
+    let b = blocks.find(x => x.tourId === t.id);
+    if(!b){
+      b = { tourId: t.id, tourName: t.name, rows: [] };
+      blocks.push(b);
+    }
+    b.rows.push(row);
+  };
+
+  state.tournaments.forEach(t=>{
+    // Scope-Filter
     if(scope==="tour" && t.id!==curTournamentId) return;
     if(scope!=="all" && scope!=="tour" && t.id!==scope) return;
     if(!(t.players||[]).includes(pid)) return;
+
     (t.rounds||[]).forEach(r=>{
-      const sum=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
-      const chips=+r.chips?.[pid]||0;
-      const pct=sum? (chips/sum*100):0;
-      const ranks=rankCompetition((t.players||[]).map(pp=> ({name:pp, value:+(r.chips?.[pp]||0)})));
-      const status= sum===(t.playerCount*t.startChips)?'OK': (sum<(t.playerCount*t.startChips)?'Unvollständig':'Überschüssig');
-      let euroDelta=null;
+      const totalChips = (t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
+      const myChips    = +r.chips?.[pid] || 0;
+      const myPct      = totalChips ? (myChips/totalChips*100) : 0;
+
+      const ranks  = rankCompetition((t.players||[]).map(pp => ({name:pp, value:+(r.chips?.[pp]||0)})));
+      const myRank = ranks[pid] || (t.players?.length || 4);
+
+      const target = (t.playerCount||t.players?.length||0) * (t.startChips||0);
+      const status = totalChips===target ? "OK" : (totalChips<target ? "Unvollständig" : "Überschüssig");
+
+      // €-Delta nur, wenn Einsatz hinterlegt
+      let euroDelta = null;
       if(r.euroPerPersonCents!=null){
-        const participants = (t.players||[]).filter(pp => (+r.chips?.[pp]||0) > 0).length;
-        const potCents = r.euroPerPersonCents * participants;
-        const chipValue = sum>0? potCents / sum : 0;
-        euroDelta = Math.round(chips * chipValue - r.euroPerPersonCents)/100;
+        const participants = (t.players||[]).filter(pp => (+r.chips?.[pp]||0)>0).length;
+        const potCents     = r.euroPerPersonCents * participants;
+        const chipValue    = totalChips>0 ? potCents/totalChips : 0;
+        euroDelta = Math.round(myChips*chipValue - r.euroPerPersonCents)/100; // in €
       }
-      rows.push({date:r.date, tour:t.name, rank:ranks[pid]||4, chips, pct, status, euroDelta, durationMin:r.durationMin||0});
+
+      pushRow(t, {
+        date: r.date,
+        tour: t.name,
+        rank: myRank,
+        chips: myChips,
+        pct: myPct,
+        status,
+        euroDelta,                     // null oder Zahl in €
+        durationMin: r.durationMin||0  // Minuten
+      });
     });
   });
-  rows.sort((a,b)=> (b.date||"").localeCompare(a.date||""));
 
-  const n=rows.length;
-  const avgChips=n? rows.reduce((a,b)=> a+b.chips,0)/n : 0;
-  const avgPct=n? rows.reduce((a,b)=> a+b.pct,0)/n : 0;
-  const dist=[1,2,3,4].map(k=> rows.filter(x=> x.rank===k).length);
-  const euroGames= rows.filter(r=> r.euroDelta!=null);
-  const euroSum  = euroGames.reduce((a,b)=> a+(b.euroDelta||0),0);
-  const totalDur = rows.reduce((a,b)=> a+(b.durationMin||0),0);
+  // Sortierung: Turnierblöcke alphabetisch, Zeilen im Block nach Datum (neu → alt)
+  blocks.sort((a,b)=> (a.tourName||"").localeCompare(b.tourName||""));
+  blocks.forEach(b => b.rows.sort((a,b)=> (b.date||"").localeCompare(a.date||"")));
 
-  $("profSub").textContent = `Runden: ${n} · Ø Chips: ${Math.round(avgChips)} · Ø %Stack: ${avgPct.toFixed(1)}% · 🥇 ${dist[0]} · 🥈 ${dist[1]} · 🥉 ${dist[2]} · 🗑️ ${dist[3]} · 💰 ${euroGames.length} (Summe: ${euroSum.toFixed(2)} €) · ⏱ ${totalDur} min`;
+  // --- 2) Kopf-KPIs schreiben (mehrzeilig in #profMeta) ---
+  renderProfileKpis(pid);
 
-  const pv=$("pv_spark"); const ser=[...rows].reverse().map(x=> x.pct);
-  pv.innerHTML = ser.map(v=> `<span title='${v.toFixed(1)}%' style='flex:1;background:linear-gradient(180deg,#6ee7ff,#8b5cff);align-self:flex-end;height:${Math.max(4,Math.min(100,Math.round(v)))}%'></span>`).join("");
+  // --- 3) Sparkline bauen ---
+  const pv = $("pv_spark");
+  const allRows = blocks.flatMap(b=> b.rows);
+  pv.innerHTML = "";
+  if(allRows.length){
+    const series = [...allRows].reverse().map(x => x.pct);   // älteste links
+    pv.innerHTML = series.map(v => {
+      const h = Math.max(4, Math.min(100, Math.round(v || 0))); // Höhe in %
+      return `<span title="${(v||0).toFixed(1)}%" style="height:${h}%"></span>`;
+    }).join("");
+  }
 
-  const tbody=$("profRows"); tbody.innerHTML="";
-  rows.forEach(r=>{
+  // --- 4) Tabelle (nach Turnier gruppiert) füllen ---
+  const tbody = $("profRows");
+  tbody.innerHTML = "";
+
+  if(blocks.length===0){
     const tr=document.createElement("tr");
-    tr.innerHTML = `
-      <td>${fmtDate(r.date)}</td>
-      <td>${r.tour}</td>
-      <td>#${r.rank}</td>
-      <td>${r.chips}</td>
-      <td>${r.pct.toFixed(1)}%</td>
-      <td>${r.status}${r.euroDelta!=null? ` · ${(r.euroDelta>=0? "+":"")}${r.euroDelta.toFixed(2)} €`: ""}${r.durationMin? ` · ⏱ ${r.durationMin} min`:""}</td>`;
+    tr.innerHTML = `<td colspan="6" class="sub">Keine Runden im gewählten Bereich.</td>`;
     tbody.appendChild(tr);
+    return;
+  }
+
+  blocks.forEach((b, bi)=>{
+    // Blockkopf: Turniername
+    const head = document.createElement("tr");
+    head.innerHTML = `<td colspan="6" style="padding-top:${bi? '12px':'0'}"><b>${b.tourName}</b></td>`;
+    tbody.appendChild(head);
+
+    // Zeilen
+    b.rows.forEach(r=>{
+      const tr=document.createElement("tr");
+      tr.innerHTML = `
+        <td>${fmtDate(r.date)}</td>
+        <td>${b.tourName}</td>
+        <td>#${r.rank}</td>
+        <td>${r.chips}</td>
+        <td>${r.pct.toFixed(1)}%</td>
+        <td>${r.status}${r.euroDelta!=null? ` · ${(r.euroDelta>=0? "+":"")}${r.euroDelta.toFixed(2)} €`: ""}${r.durationMin? ` · ⏱ ${r.durationMin} min`:""}</td>`;
+      tbody.appendChild(tr);
+    });
   });
 }
 
+
 /* ===========================================================
-   ALL-TIME Bester – Dialog + Ergebnis-Dialog (Drucken)
+   All-Time (mit Spielzeit)
    =========================================================== */
 function openAllTime(){
-  const box = $("at_players"); box.innerHTML="";
+  const dlg=$("dlgAllTime");
+  // Spieler-Auswahl
+  const c=$("at_players"); c.innerHTML="";
   state.profiles.forEach(p=>{
     const lab=document.createElement("label"); lab.style.display="flex"; lab.style.gap="8px"; lab.style.alignItems="center";
-    lab.innerHTML = `<input type="checkbox" value="${p.id}" checked> ${p.name}`;
-    box.appendChild(lab);
+    lab.innerHTML=`<input type="checkbox" value="${p.id}" checked> ${p.name}`;
+    c.appendChild(lab);
   });
-  $("at_sort").value="avgStack";
-  $("at_dir").value="desc";
 
-  const dlg=$("dlgAllTime");
   dlg.showModal();
   $("atCancel").onclick=()=> dlg.close();
   $("atApply").onclick=()=>{
-    const selIds=[...box.querySelectorAll("input:checked")].map(i=> i.value);
+    const ids=[...$("at_players").querySelectorAll("input:checked")].map(i=> i.value);
     const sortBy=$("at_sort").value;
     const dir=$("at_dir").value;
-
-    const players = state.profiles.filter(p=> selIds.includes(p.id));
-    const stats = players.map(p=>{
-      let games=0,sumChips=0,sumPct=0,euro=0;
-      state.tournaments.forEach(t=>{
-        (t.rounds||[]).forEach(r=>{
-          const chips=+r.chips?.[p.id]||0;
-          if(chips>0 || (r.chips && p.id in r.chips)){
-            games++; sumChips+=chips;
-            const sum=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
-            sumPct += sum? (chips/sum*100):0;
-            if(r.euroPerPersonCents!=null){
-              const participants=(t.players||[]).filter(pp => (+r.chips?.[pp]||0)>0).length;
-              const pot=r.euroPerPersonCents*participants;
-              const chipVal=sum>0? pot/sum:0;
-              euro += Math.round(chips*chipVal - r.euroPerPersonCents)/100;
-            }
-          }
-        });
-      });
-      return { id:p.id, name:p.name,
-        games,
-        avgChips: games? sumChips/games:0,
-        avgStack: games? sumPct/games:0,
-        euroBalance: euro
-      };
-    });
-
-    stats.sort((a,b)=>{
-      const k=sortBy; const x=a[k], y=b[k];
-      return (dir==="asc"? (x>y?1:-1) : (x<y?1:-1));
-    });
-
-    $("at_header").textContent = `Sortiert nach: ${$("at_sort").selectedOptions[0].text} (${dir==="asc"?"aufsteigend":"absteigend"})`;
-    $("at_rows").innerHTML = stats.map(s=> `<tr>
-      <td class="al-left">${s.name}</td>
-      <td class="al-right">${s.games}</td>
-      <td class="al-right">${s.avgChips.toFixed(1)}</td>
-      <td class="al-right">${s.avgStack.toFixed(1)}%</td>
-      <td class="al-right">${s.euroBalance.toFixed(2)} €</td>
-    </tr>`).join("");
-
+    renderAllTimeResult(ids, sortBy, dir);
     dlg.close();
-    $("dlgAllTimeResult").showModal();
-
-    $("atResClose").onclick = ()=> $("dlgAllTimeResult").close();
-    $("atResPrint").onclick = ()=> window.print();
   };
 }
 
+function renderAllTimeResult(ids, sortBy, dir){
+  const rows=[];
+  ids.forEach(pid=>{
+    const rounds = collectPlayerRounds(pid);
+    if(!rounds.length) return;
+    const games   = rounds.length;
+    const chipsAvg= sum(rounds.map(r=> r.myChips))/games;
+    const pctAvg  = sum(rounds.map(r=> r.myPct))/games;
+    const euroSum = sum(rounds.map(r=> r.euroPerPersonCents||0))/100;
+    const mins    = sum(rounds.map(r=> r.durationMin||0));
+    rows.push({pid,games,chipsAvg,pctAvg,euroSum,mins});
+  });
+
+  const key = {avgChips:'chipsAvg', avgStack:'pctAvg', euroBalance:'euroSum', games:'games'}[sortBy] || 'pctAvg';
+  rows.sort((a,b)=> (dir==='asc'? 1:-1) * ((a[key]||0)-(b[key]||0)));
+
+  // UI-Tabelle im Modal
+  $("at_header").textContent =
+    `Sortiert nach: ${$("at_sort").selectedOptions[0].text} (${dir==='asc'?'aufsteigend':'absteigend'})`;
+
+  const tb=$("at_rows"); tb.innerHTML="";
+  rows.forEach(r=>{
+    const p=state.profiles.find(x=>x.id===r.pid);
+    const tr=document.createElement("tr");
+    tr.innerHTML = `<td>${p?.name||"?"}</td>
+      <td class="al-right">${r.games}</td>
+      <td class="al-right">${r.chipsAvg.toFixed(1)}</td>
+      <td class="al-right">${r.pctAvg.toFixed(1)}%</td>
+      <td class="al-right">${r.euroSum.toFixed(2)} €</td>
+      <td class="al-right">${r.mins} min</td>`;
+    tb.appendChild(tr);
+  });
+
+  // Print-Only-Tabelle füllen
+  $("printAtMeta").textContent =
+    `Sortiert nach: ${$("at_sort").selectedOptions[0].text} (${dir==='asc'?'aufsteigend':'absteigend'})`;
+
+  const ptb = $("printAtRows"); ptb.innerHTML="";
+  rows.forEach(r=>{
+    const p=state.profiles.find(x=>x.id===r.pid);
+    const tr=document.createElement("tr");
+    tr.innerHTML = `
+      <td style="padding:6px;border-bottom:1px solid #ddd">${p?.name||"?"}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.games}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.chipsAvg.toFixed(1)}</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.pctAvg.toFixed(1)}%</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.euroSum.toFixed(2)} €</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.mins} min</td>`;
+    ptb.appendChild(tr);
+  });
+
+  // <<< WICHTIG: Ergebnis-Dialog anzeigen + Buttons verdrahten >>>
+  const resultDlg = $("dlgAllTimeResult");
+  resultDlg.showModal();
+
+  $("atResClose").onclick = () => resultDlg.close();
+
+  $("atResPrint").onclick = () => {
+    document.body.classList.add("printing-at");
+    window.print();
+    setTimeout(()=> document.body.classList.remove("printing-at"), 0);
+  };
+}
+
+// All-Time Ergebnis drucken: eigenes Layout aktivieren
+
+
 /* ===========================================================
-   START
+   Streak
    =========================================================== */
-window.addEventListener("load", async ()=>{
-  const params=new URLSearchParams(location.search);
-  roomId=params.get("room")||"stammtisch";
+function computeStreak(pid){
+  // Zählt Tage in Folge mit irgendeiner gespielten Runde (berücksichtigt streakWeek)
+  const week = state.profilePrefs[pid]?.streakWeek || {1:true,2:true,3:true,4:true,5:false,6:false,0:false};
+  // Hole alle Datums, an denen der Spieler Runden hatte
+  const dates=new Set();
+  state.tournaments.forEach(t=>{
+    (t.rounds||[]).forEach(r=>{
+      if((t.players||[]).includes(pid) && (r.chips?.[pid]>0 || r.chips?.[pid]===0)){
+        dates.add(r.date);
+      }
+    });
+  });
+  if(!dates.size) return 0;
+
+  // Von heute rückwärts zählen – nur Tage zählen, die in week=true
+  let streak=0;
+  const d=new Date(); // heute
+  for(let i=0;i<365;i++){
+    const dow=d.getDay();               // 0=So..6=Sa
+    const iso=d.toISOString().slice(0,10);
+    const relevant = !!week[dow];
+    const played = dates.has(iso);
+    if(relevant){
+      if(played){ streak++; }
+      else { break; }
+    }
+    d.setDate(d.getDate()-1);
+  }
+  return streak;
+}
+
+/* ===========================================================
+   INIT
+   =========================================================== */
+window.addEventListener("DOMContentLoaded", async ()=>{
   await ensureAuth();
+  // Raum aus URL
+  try{
+    const u=new URL(location.href);
+    const r=u.searchParams.get("room"); if(r) roomId=r;
+  }catch(e){}
   bindRealtime();
 });
