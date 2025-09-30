@@ -107,12 +107,26 @@ function migrate(d){
       comment: r.comment || ""
     }));
   });
-  if(!d.profilePrefs) d.profilePrefs = {};
-  d.profiles.forEach(p=>{
-    if(!d.profilePrefs[p.id]) d.profilePrefs[p.id] = {
-      streakWeek: {0:false,1:true,2:true,3:true,4:true,5:false,6:false}
+  
+if(!d.profilePrefs) d.profilePrefs = {};
+d.profiles.forEach(p=>{
+  // Eintrag anlegen, falls fehlt
+  if(!d.profilePrefs[p.id]){
+    d.profilePrefs[p.id] = {
+      streakWeek: {0:false,1:true,2:true,3:true,4:true,5:false,6:false},
+      streakSkipDates: {} // NEU: datumsspezifische Pausen
     };
-  });
+  }
+  // Fallbacks für bestehende Daten (falls alt gespeichert)
+  if(!d.profilePrefs[p.id].streakWeek){
+    d.profilePrefs[p.id].streakWeek = {0:false,1:true,2:true,3:true,4:true,5:false,6:false};
+  }
+  if(!d.profilePrefs[p.id].streakSkipDates){
+    d.profilePrefs[p.id].streakSkipDates = {}; // NEU
+  }
+});
+
+  
   return d;
 }
 
@@ -836,9 +850,11 @@ function renderAllTimeResult(ids, sortBy, dir){
    Streak
    =========================================================== */
 function computeStreak(pid){
-  // Zählt Tage in Folge mit irgendeiner gespielten Runde (berücksichtigt streakWeek)
+  // Wochentags-Config + datumsspezifische Skip-Tage holen
   const week = state.profilePrefs[pid]?.streakWeek || {1:true,2:true,3:true,4:true,5:false,6:false,0:false};
-  // Hole alle Datums, an denen der Spieler Runden hatte
+  const skip = new Set(Object.keys(state.profilePrefs[pid]?.streakSkipDates || {}));
+
+  // Alle Tage sammeln, an denen der Spieler gespielt hat
   const dates=new Set();
   state.tournaments.forEach(t=>{
     (t.rounds||[]).forEach(r=>{
@@ -849,14 +865,15 @@ function computeStreak(pid){
   });
   if(!dates.size) return 0;
 
-  // Von heute rückwärts zählen – nur Tage zählen, die in week=true
+  // Von heute rückwärts zählen, nur relevante (nicht geskipte) Tage
   let streak=0;
-  const d=new Date(); // heute
+  const d=new Date();
   for(let i=0;i<365;i++){
-    const dow=d.getDay();               // 0=So..6=Sa
+    const dow=d.getDay(); // 0=So..6=Sa
     const iso=d.toISOString().slice(0,10);
-    const relevant = !!week[dow];
-    const played = dates.has(iso);
+    const relevant = !!week[dow] && !skip.has(iso); // Skip-Dates machen den Tag „nicht relevant“
+    const played   = dates.has(iso);
+
     if(relevant){
       if(played){ streak++; }
       else { break; }
@@ -864,6 +881,23 @@ function computeStreak(pid){
     d.setDate(d.getDate()-1);
   }
   return streak;
+}
+// Ein bestimmtes Datum (YYYY-MM-DD) für ein Profil pausieren/entpausieren
+function setStreakSkip(pid, isoDate, on){
+  if(!state.profilePrefs[pid]) state.profilePrefs[pid] = {};
+  if(!state.profilePrefs[pid].streakSkipDates) state.profilePrefs[pid].streakSkipDates = {};
+  if(on){
+    state.profilePrefs[pid].streakSkipDates[isoDate] = true;
+  } else {
+    delete state.profilePrefs[pid].streakSkipDates[isoDate];
+  }
+  save();
+}
+
+// Hilfsfunktion, um ein Date-Objekt als YYYY-MM-DD zu bekommen
+function toIsoDate(d){
+  const z = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}`;
 }
 
 /* ===========================================================
