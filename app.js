@@ -176,7 +176,7 @@ function renderAuth(){
     } else btn.textContent="👥";
   } else btn.textContent="👥";
 
-  // Kartenliste (zunächst leer/hidden – erst per Link sichtbar)
+  // Kartenliste
   const grid=$("authList"); grid.innerHTML="";
   state.profiles.forEach(p=>{
     const card=document.createElement("div"); card.className="card";
@@ -383,7 +383,7 @@ function renderLeaderboard(t){
   order.forEach((pid,i)=>{
     const p=state.profiles.find(x=>x.id===pid);
     const card=document.createElement("div"); card.className="card"; card.style.cursor="pointer";
-    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":""; 
+    const medal=i===0?"🥇":i===1?"🥈":i===2?"🥉":"";
     card.innerHTML = `<h3>${medal? medal+" ":""}<img class="avatar mini" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"> ${p.name}</h3>
       <div class="sub">Ø Chips: <b>${Math.round(avgChips[pid])}</b> · Ø %Stack: <b>${avgPct[pid].toFixed(1)}</b>%</div>
       <div class="bar gray"><span style="width:${clamp(avgPct[pid],0,100)}%"></span></div>`;
@@ -441,6 +441,7 @@ function renderRounds(t){
   qsa("[data-del-id]").forEach(b=> b.addEventListener("click", ()=> deleteRound(t.id, b.getAttribute("data-del-id"))));
   qsa("[data-cmt-id]").forEach(b=> b.addEventListener("click", ()=> openComment(t.id, b.getAttribute("data-cmt-id"))));
 }
+
 /* ---------- Runden CRUD ---------- */
 const dlgRound=$("dlgRound"), formRound=$("roundForm"), sumHint=$("sumHint");
 function openRoundEdit(tid, rid){
@@ -559,7 +560,6 @@ function openTourSettings(){
     save(); dlgSet.close(); render("tournament");
   };
 }
-
 /* ===========================================================
    PROFIL-QUICK-VIEW (mit Druck & KPI-Zeilen)
    =========================================================== */
@@ -569,94 +569,66 @@ $("profEdit").addEventListener("click", ()=> { if(currentProfileId) openProfileE
 
 function openProfileView(pid, scopeDefault="all"){
   show("profile");
-  const p = state.profiles.find(x=> x.id===pid); 
+  const p = state.profiles.find(x=> x.id===pid);
   if(!p) return;
 
   // Profil-Titel + Avatar
   $("profTitle").innerHTML = `<span class="avatarWrap"><img class="avatar mid" src="${p.avatarDataUrl||genDefaultAvatar(p.name)}"></span> ${p.name}`;
-  
+
   // Streak-Badge im Profil
   const wrap=$("profTitle").querySelector(".avatarWrap");
   wrap.querySelector(".streakBadge")?.remove();
-  const s=computeStreak(pid); 
-  if(s>0){ 
-    const b=document.createElement("span"); 
-    b.className="streakBadge"; 
-    b.textContent=String(s); 
-    wrap.appendChild(b); 
+  const s=computeStreak(pid);
+  if(s>0){
+    const b=document.createElement("span");
+    b.className="streakBadge";
+    b.textContent=String(s);
+    wrap.appendChild(b);
   }
 
   // Profil bearbeiten-Button nur für eingeloggten Spieler und nur im Profil-View
-  if(pid === currentProfileId && scopeDefault === "all"){
-    $("profEdit").style.display = "";
-  } else {
-    $("profEdit").style.display = "none";
-  }
+  $("profEdit").style.display = (pid === currentProfileId && scopeDefault === "all") ? "" : "none";
 
   // Dropdown für Scope
   const sel=$("profScopeSel");
-  sel.innerHTML = `<option value="all"${scopeDefault==="all"?" selected":""}>Gesamt (alle Turniere)</option>` + 
+  sel.innerHTML = `<option value="all"${scopeDefault==="all"?" selected":""}>Gesamt (alle Turniere)</option>` +
     state.tournaments.map(t=> `<option value="${t.id}"${(scopeDefault==="tour" && t.id===curTournamentId)?" selected":""}>${t.name}</option>`).join("");
   sel.onchange=()=> renderProfile(pid, sel.value);
 
   renderProfile(pid, sel.value);
 }
 
+function renderProfileKpis(pid, rows){
+  const n = rows.length;
+  const avgChips = n ? Math.round(rows.reduce((a,b)=> a + (b.chips||0), 0) / n) : 0;
+  const avgPct   = n ?        rows.reduce((a,b)=> a + (b.pct||0),   0) / n   : 0;
 
-function renderProfileKpis(pid){
-  // aggregieren über alle Turniere
-  const rounds = collectPlayerRounds(pid);
-  const games = rounds.length;
-  const chipsAvg = games? Math.round(sum(rounds.map(r=> r.myChips))/games) : 0;
-  const pctAvg   = games? (sum(rounds.map(r=> r.myPct))/games) : 0;
-  const medals = countMedals(rounds);
-  const euroSum = sum(rounds.map(r=> r.euroPerPersonCents||0))/100;
-  const mins = sum(rounds.map(r=> r.durationMin||0));
+  let g=0,s=0,b=0,x=0;
+  rows.forEach(r=>{
+    if(r.rank===1) g++; else if(r.rank===2) s++; else if(r.rank===3) b++; else x++;
+  });
+
+  const euroSum = rows.reduce((a,b)=> a + (b.euroDelta ?? 0), 0);
+  const mins    = rows.reduce((a,b)=> a + (b.durationMin||0), 0);
 
   const k = $("profMeta");
   k.innerHTML = `
-    <div class="row sub">Runden: <b>${games}</b></div>
-    <div class="row sub">Ø Chips: <b>${chipsAvg}</b> · Ø %Stack: <b>${pctAvg.toFixed(1)}%</b></div>
-    <div class="row sub">🥇 <b>${medals.gold}</b> · 🥈 <b>${medals.silver}</b> · 🥉 <b>${medals.bronze}</b> · 🗑️ <b>${medals.trash}</b></div>
-    <div class="row sub">💰 <b>${euroSum.toFixed(2)} €</b> (Summe) · ⏱ <b>${mins}</b> min</div>`;
-}
-
-function collectPlayerRounds(pid){
-  const rows=[];
-  state.tournaments.forEach(t=>{
-    if(!(t.players||[]).includes(pid)) return;
-    (t.rounds||[]).forEach(r=>{
-      const sumRound=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
-      const my=+r.chips?.[pid]||0;
-      const pct=sumRound? (my/sumRound*100):0;
-      const ranks=rankCompetition((t.players||[]).map(pp=> ({name:pp, value:+(r.chips?.[pp]||0)})));
-      rows.push({t, r, myChips:my, myPct:pct, rank:ranks[pid], euroPerPersonCents:r.euroPerPersonCents||0, durationMin:r.durationMin||0});
-    });
-  });
-  return rows.sort((a,b)=> (b.r.date||"").localeCompare(a.r.date||""));
-}
-function countMedals(rows){
-  let g=0,s=0,b=0,x=0;
-  rows.forEach(row=>{
-    if(row.rank===1) g++; else if(row.rank===2) s++; else if(row.rank===3) b++; else x++;
-  });
-  return {gold:g,silver:s,bronze:b,trash:x};
+    <div class="row sub">Runden: <b>${n}</b></div>
+    <div class="row sub">Ø Chips: <b>${avgChips}</b> · Ø %Stack: <b>${avgPct.toFixed(1)}%</b></div>
+    <div class="row sub">🥇 <b>${g}</b> · 🥈 <b>${s}</b> · 🥉 <b>${b}</b> · 🗑️ <b>${x}</b></div>
+    <div class="row sub">💰 <b>${euroSum>=0?'+':''}${euroSum.toFixed(2)} €</b> (Gewinn/Verlust) · ⏱ <b>${mins}</b> min</div>`;
 }
 
 function renderProfile(pid, scope){
-  // --- 1) Runden einsammeln und nach Turnier gruppieren ---
-  const blocks = []; // [{tourId, tourName, rows:[...]}]
+  // 1) Runden einsammeln und nach Turnier gruppieren
+  const blocks = [];
   const pushRow = (t, row) => {
     let b = blocks.find(x => x.tourId === t.id);
-    if(!b){
-      b = { tourId: t.id, tourName: t.name, rows: [] };
-      blocks.push(b);
-    }
+    if(!b){ b = { tourId: t.id, tourName: t.name, rows: [] }; blocks.push(b); }
     b.rows.push(row);
   };
 
   state.tournaments.forEach(t=>{
-    // Scope-Filter
     if(scope==="tour" && t.id!==curTournamentId) return;
     if(scope!=="all" && scope!=="tour" && t.id!==scope) return;
     if(!(t.players||[]).includes(pid)) return;
@@ -678,7 +650,7 @@ function renderProfile(pid, scope){
         const participants = (t.players||[]).filter(pp => (+r.chips?.[pp]||0)>0).length;
         const potCents     = r.euroPerPersonCents * participants;
         const chipValue    = totalChips>0 ? potCents/totalChips : 0;
-        euroDelta = Math.round(myChips*chipValue - r.euroPerPersonCents)/100; // in €
+        euroDelta = Math.round(myChips*chipValue - r.euroPerPersonCents)/100; // €
       }
 
       pushRow(t, {
@@ -688,32 +660,30 @@ function renderProfile(pid, scope){
         chips: myChips,
         pct: myPct,
         status,
-        euroDelta,                     // null oder Zahl in €
-        durationMin: r.durationMin||0  // Minuten
+        euroDelta,
+        durationMin: r.durationMin||0
       });
     });
   });
 
-  // Sortierung: Turnierblöcke alphabetisch, Zeilen im Block nach Datum (neu → alt)
   blocks.sort((a,b)=> (a.tourName||"").localeCompare(b.tourName||""));
   blocks.forEach(b => b.rows.sort((a,b)=> (b.date||"").localeCompare(a.date||"")));
 
-  // --- 2) Kopf-KPIs schreiben (mehrzeilig in #profMeta) ---
-  renderProfileKpis(pid);
-
-  // --- 3) Sparkline bauen ---
-  const pv = $("pv_spark");
+  // 2) KPIs & Sparkline aus gefilterten Zeilen
   const allRows = blocks.flatMap(b=> b.rows);
+  renderProfileKpis(pid, allRows);
+
+  const pv = $("pv_spark");
   pv.innerHTML = "";
   if(allRows.length){
-    const series = [...allRows].reverse().map(x => x.pct);   // älteste links
+    const series = [...allRows].reverse().map(x => x.pct);
     pv.innerHTML = series.map(v => {
-      const h = Math.max(4, Math.min(100, Math.round(v || 0))); // Höhe in %
+      const h = Math.max(4, Math.min(100, Math.round(v || 0)));
       return `<span title="${(v||0).toFixed(1)}%" style="height:${h}%"></span>`;
     }).join("");
   }
 
-  // --- 4) Tabelle (nach Turnier gruppiert) füllen ---
+  // 3) Tabelle
   const tbody = $("profRows");
   tbody.innerHTML = "";
 
@@ -725,12 +695,10 @@ function renderProfile(pid, scope){
   }
 
   blocks.forEach((b, bi)=>{
-    // Blockkopf: Turniername
     const head = document.createElement("tr");
     head.innerHTML = `<td colspan="6" style="padding-top:${bi? '12px':'0'}"><b>${b.tourName}</b></td>`;
     tbody.appendChild(head);
 
-    // Zeilen
     b.rows.forEach(r=>{
       const tr=document.createElement("tr");
       tr.innerHTML = `
@@ -745,6 +713,21 @@ function renderProfile(pid, scope){
   });
 }
 
+/* Hilfsfunktion (wird in All-Time genutzt) */
+function collectPlayerRounds(pid){
+  const rows=[];
+  state.tournaments.forEach(t=>{
+    if(!(t.players||[]).includes(pid)) return;
+    (t.rounds||[]).forEach(r=>{
+      const sumRound=(t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0),0);
+      const my=+r.chips?.[pid]||0;
+      const pct=sumRound? (my/sumRound*100):0;
+      const ranks=rankCompetition((t.players||[]).map(pp=> ({name:pp, value:+(r.chips?.[pp]||0)})));
+      rows.push({t, r, myChips:my, myPct:pct, rank:ranks[pid], euroPerPersonCents:r.euroPerPersonCents||0, durationMin:r.durationMin||0});
+    });
+  });
+  return rows.sort((a,b)=> (b.r.date||"").localeCompare(a.r.date||""));
+}
 
 /* ===========================================================
    All-Time (mit Spielzeit)
@@ -773,20 +756,37 @@ function openAllTime(){
 function renderAllTimeResult(ids, sortBy, dir){
   const rows=[];
   ids.forEach(pid=>{
-    const rounds = collectPlayerRounds(pid);
+    const rounds = collectPlayerRounds(pid); // {t, r, myChips, myPct, durationMin, ...}
     if(!rounds.length) return;
+
     const games   = rounds.length;
     const chipsAvg= sum(rounds.map(r=> r.myChips))/games;
     const pctAvg  = sum(rounds.map(r=> r.myPct))/games;
-    const euroSum = sum(rounds.map(r=> r.euroPerPersonCents||0))/100;
-    const mins    = sum(rounds.map(r=> r.durationMin||0));
+
+    // Gewinn/Verlust berechnen (nicht Einsatz)
+    let euroSum = 0; // €
+    let mins    = 0;
+    rounds.forEach(row=>{
+      mins += row.durationMin||0;
+      const t = row.t, r = row.r;
+      if(r.euroPerPersonCents!=null){
+        const participants = (t.players||[]).filter(pp => (+r.chips?.[pp]||0)>0).length;
+        const totalChips   = (t.players||[]).reduce((a,pp)=> a+(+r.chips?.[pp]||0), 0);
+        const potCents     = r.euroPerPersonCents * participants;
+        const chipValue    = totalChips>0 ? potCents/totalChips : 0; // Cent pro Chip
+        const deltaEuro    = Math.round(row.myChips*chipValue - r.euroPerPersonCents) / 100; // €
+        euroSum += deltaEuro;
+      }
+    });
+
     rows.push({pid,games,chipsAvg,pctAvg,euroSum,mins});
   });
 
-  const key = {avgChips:'chipsAvg', avgStack:'pctAvg', euroBalance:'euroSum', games:'games'}[sortBy] || 'pctAvg';
+  const keyMap = {avgChips:'chipsAvg', avgStack:'pctAvg', euroBalance:'euroSum', games:'games'};
+  const key = keyMap[sortBy] || 'pctAvg';
   rows.sort((a,b)=> (dir==='asc'? 1:-1) * ((a[key]||0)-(b[key]||0)));
 
-  // UI-Tabelle im Modal
+  // UI-Modal füllen
   $("at_header").textContent =
     `Sortiert nach: ${$("at_sort").selectedOptions[0].text} (${dir==='asc'?'aufsteigend':'absteigend'})`;
 
@@ -798,7 +798,7 @@ function renderAllTimeResult(ids, sortBy, dir){
       <td class="al-right">${r.games}</td>
       <td class="al-right">${r.chipsAvg.toFixed(1)}</td>
       <td class="al-right">${r.pctAvg.toFixed(1)}%</td>
-      <td class="al-right">${r.euroSum.toFixed(2)} €</td>
+      <td class="al-right">${r.euroSum>=0?'+':''}${r.euroSum.toFixed(2)} €</td>
       <td class="al-right">${r.mins} min</td>`;
     tb.appendChild(tr);
   });
@@ -816,26 +816,21 @@ function renderAllTimeResult(ids, sortBy, dir){
       <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.games}</td>
       <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.chipsAvg.toFixed(1)}</td>
       <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.pctAvg.toFixed(1)}%</td>
-      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.euroSum.toFixed(2)} €</td>
+      <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.euroSum>=0?'+':''}${r.euroSum.toFixed(2)} €</td>
       <td style="padding:6px;text-align:right;border-bottom:1px solid #ddd">${r.mins} min</td>`;
     ptb.appendChild(tr);
   });
 
-  // <<< WICHTIG: Ergebnis-Dialog anzeigen + Buttons verdrahten >>>
+  // Dialog öffnen + Print-Button
   const resultDlg = $("dlgAllTimeResult");
   resultDlg.showModal();
-
   $("atResClose").onclick = () => resultDlg.close();
-
   $("atResPrint").onclick = () => {
     document.body.classList.add("printing-at");
     window.print();
     setTimeout(()=> document.body.classList.remove("printing-at"), 0);
   };
 }
-
-// All-Time Ergebnis drucken: eigenes Layout aktivieren
-
 
 /* ===========================================================
    Streak
