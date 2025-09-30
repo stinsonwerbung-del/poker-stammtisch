@@ -165,7 +165,8 @@ function showHeaderAvatar(pid){
   const s = computeStreak(pid);
   if(s>0){ const b=document.createElement("span"); b.className="streakBadge"; b.textContent=String(s); btn.appendChild(b); btn.title=`Streak: ${s}`; }
 
-  btn.onclick = ()=> openProfileView(pid, curTournamentId ? "tour" : "all");
+  btn.onclick = ()=> openProfileView(pid, "all");
+
 }
 
 /* ===========================================================
@@ -601,7 +602,8 @@ function openProfileView(pid, scopeDefault="all"){
   }
 
   // Profil bearbeiten-Button nur für eingeloggten Spieler und nur im Profil-View
-  $("profEdit").style.display = (pid === currentProfileId && scopeDefault === "all") ? "" : "none";
+$("profEdit").style.display = (pid === currentProfileId) ? "" : "none";
+
 
   // Dropdown für Scope
   const sel=$("profScopeSel");
@@ -610,6 +612,42 @@ function openProfileView(pid, scopeDefault="all"){
   sel.onchange=()=> renderProfile(pid, sel.value);
 
   renderProfile(pid, sel.value);
+  function renderStreakControls(pid){
+  const wrap = $("streakControls");
+  if(!wrap) return;
+
+  const skip = state.profilePrefs[pid]?.streakSkipDates || {};
+  const today = todayIso();
+
+  wrap.innerHTML = `
+    <label>
+      <input type="checkbox" id="streakSkipToday" ${skip[today] ? "checked": ""}>
+      Heute (${fmtDate(today)}) aussetzen
+    </label>
+    <br>
+    <label>
+      Beliebiges Datum:
+      <input type="date" id="streakSkipDate">
+    </label>
+    <button class="btn small ghost" id="btnStreakToggle">Toggle Pause</button>
+  `;
+
+  // Events
+  $("streakSkipToday").onchange = e=>{
+    setStreakSkip(pid, today, e.target.checked);
+    showHeaderAvatar(pid); // Badge neu rendern
+  };
+  $("btnStreakToggle").onclick = ()=>{
+    const d = $("streakSkipDate").value;
+    if(!d) return alert("Bitte ein Datum wählen.");
+    const cur = !!skip[d];
+    setStreakSkip(pid, d, !cur);
+    alert(`${fmtDate(d)} ${cur?"ist jetzt wieder aktiv":"wird jetzt ignoriert"}.`);
+    showHeaderAvatar(pid);
+  };
+}
+renderStreakControls(pid);
+
 }
 
 function renderProfileKpis(pid, rows){
